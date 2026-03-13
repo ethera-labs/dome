@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/compose-network/dome/internal/logger"
-	"github.com/compose-network/dome/internal/rollup"
+	"github.com/ethera-labs/dome/internal/logger"
+	"github.com/ethera-labs/dome/internal/rollup"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"

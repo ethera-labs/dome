@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/compose-network/dome/internal/logger"
+	"github.com/ethera-labs/dome/internal/logger"
 	"github.com/ethereum/go-ethereum/common"
 	"gopkg.in/yaml.v3"
 )
@@ -25,8 +25,8 @@ const (
 	ChainNameRollupB ChainName = "rollup-b"
 
 	ContractNameBridge   ContractName = "bridge"
-	ContractNamePingPong ContractName = "pingpong"
-	ContractNameToken    ContractName = "bridgeabletoken"
+	ContractNamePingPong ContractName = "ping-pong"
+	ContractNameToken    ContractName = "token"
 )
 
 type (
@@ -37,6 +37,7 @@ type (
 		L2 L2 `yaml:"l2"`
 	}
 	L2 struct {
+		SidecarURL   string                          `yaml:"sidecar-url"`
 		ChainConfigs map[ChainName]ChainConfig       `yaml:"chain-configs"`
 		Contracts    map[ContractName]ContractConfig `yaml:"contracts"`
 	}
@@ -90,30 +91,23 @@ func loadConfig(data []byte) error {
 	tokenABILen := len(Values.L2.Contracts[ContractNameToken].ABI)
 	pingPongABILen := len(Values.L2.Contracts[ContractNamePingPong].ABI)
 
-	logger.
-		Info(`configuration loaded successfully.
-			RollupA_ID: %d,
-			RollupA_RPC: %s
-			RollupB_ID: %d,
-			RollupB_RPC: %s
-			Bridge_Address: %s (ABI: %d bytes)
-			Token_Address: %s (ABI: %d bytes)
-			PingPong_Address: %s (ABI: %d bytes)`,
-			Values.L2.ChainConfigs[ChainNameRollupA].ID,
-			Values.L2.ChainConfigs[ChainNameRollupA].RPCURL,
-			Values.L2.ChainConfigs[ChainNameRollupB].ID,
-			Values.L2.ChainConfigs[ChainNameRollupB].RPCURL,
-			Values.L2.Contracts[ContractNameBridge].Address.Hex(),
-			bridgeABILen,
-			Values.L2.Contracts[ContractNameToken].Address.Hex(),
-			tokenABILen,
-			Values.L2.Contracts[ContractNamePingPong].Address.Hex(),
-			pingPongABILen)
+	logger.Info("configuration loaded: sidecar=%s rollup-a=%d(%s) rollup-b=%d(%s)",
+		Values.L2.SidecarURL,
+		Values.L2.ChainConfigs[ChainNameRollupA].ID, Values.L2.ChainConfigs[ChainNameRollupA].RPCURL,
+		Values.L2.ChainConfigs[ChainNameRollupB].ID, Values.L2.ChainConfigs[ChainNameRollupB].RPCURL)
+	logger.Info("contracts: bridge=%s(%d bytes) token=%s(%d bytes) ping-pong=%s(%d bytes)",
+		Values.L2.Contracts[ContractNameBridge].Address.Hex(), bridgeABILen,
+		Values.L2.Contracts[ContractNameToken].Address.Hex(), tokenABILen,
+		Values.L2.Contracts[ContractNamePingPong].Address.Hex(), pingPongABILen)
 	return nil
 }
 
 func (a *App) validate() error {
 	var err error
+
+	if a.L2.SidecarURL == "" {
+		err = errors.Join(err, fmt.Errorf("field: 'sidecar-url' must be set and non-empty"))
+	}
 
 	if chainErr := a.validateChainConfig(); chainErr != nil {
 		err = errors.Join(err, chainErr)

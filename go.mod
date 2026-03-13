@@ -1,11 +1,10 @@
-module github.com/compose-network/dome
+module github.com/ethera-labs/dome
 
 go 1.25
 
 require (
 	github.com/ethereum/go-ethereum v1.16.5
 	github.com/stretchr/testify v1.11.1
-	google.golang.org/protobuf v1.36.10
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -37,4 +36,5 @@ require (
 	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
 	golang.org/x/sync v0.12.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
+	google.golang.org/protobuf v1.36.10 // indirect
 )
