@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Runs dome tests while capturing Docker logs from key containers.
+# Runs dome tests against a local-testnet while capturing Docker container logs.
+# Container names are hardcoded to match the local-testnet docker-compose setup.
 #
-# Usage: ./scripts/test-with-logs.sh [TEST_NAME] [TIMEOUT]
+# Usage: ./scripts/test-with-localnet-logs.sh [TEST_NAME] [TIMEOUT]
 #   TEST_NAME  — test name filter (default: all tests)
 #   TIMEOUT    — test timeout (default: 300s)
 #
@@ -9,6 +10,8 @@
 #   LOGS_DIR    — directory for log files (default: logs)
 #   LOG_LEVEL   — log level passed to the binary (default: INFO)
 #   CONFIG_PATH — external config file path (optional)
+#   CONTAINERS  — space-separated list of Docker container names to capture logs from
+#                 (default: local-testnet containers)
 #
 # Logs are saved to $LOGS_DIR/<container>.log
 # Test output is saved to $LOGS_DIR/test.log
@@ -20,7 +23,7 @@ TIMEOUT="${2:-300s}"
 LOGS_DIR="${LOGS_DIR:-logs}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
-CONTAINERS=(
+DEFAULT_CONTAINERS=(
   publisher
   sidecar-a
   sidecar-b
@@ -33,6 +36,14 @@ CONTAINERS=(
   op-node-a
   op-node-b
 )
+
+# Allow overriding the container list via CONTAINERS env var (space-separated).
+# Example: CONTAINERS="my-publisher my-sidecar" ./scripts/test-with-localnet-logs.sh
+if [[ -n "${CONTAINERS:-}" ]]; then
+  read -ra CONTAINERS <<< "$CONTAINERS"
+else
+  CONTAINERS=("${DEFAULT_CONTAINERS[@]}")
+fi
 
 mkdir -p "$LOGS_DIR"
 

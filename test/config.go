@@ -20,9 +20,8 @@ var (
 	TestRollupB  *rollup.Rollup
 	TestAccountA *accounts.Account
 	TestAccountB *accounts.Account
-	BridgeABI    abi.ABI
-	TokenABI     abi.ABI
-	pingPongABI  abi.ABI
+	BridgeABI abi.ABI
+	TokenABI  abi.ABI
 )
 
 func setup(ctx context.Context) {
@@ -57,11 +56,6 @@ func setup(ctx context.Context) {
 	}
 
 	TokenABI, err = abi.JSON(strings.NewReader(contractConfigs[configs.ContractNameToken].ABI))
-	if err != nil {
-		panic("Failed to parse ABI: " + err.Error())
-	}
-
-	pingPongABI, err = abi.JSON(strings.NewReader(contractConfigs[configs.ContractNamePingPong].ABI))
 	if err != nil {
 		panic("Failed to parse ABI: " + err.Error())
 	}

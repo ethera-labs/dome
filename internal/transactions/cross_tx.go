@@ -12,7 +12,11 @@ import (
 	"github.com/ethera-labs/dome/internal/logger"
 )
 
-const xtPollInterval = 100 * time.Millisecond
+const (
+	xtPollInterval  = 100 * time.Millisecond
+	xtStatusCommitted = "committed"
+	xtStatusAborted   = "aborted"
+)
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
@@ -109,11 +113,13 @@ func WaitForDecision(ctx context.Context, sidecarURL string, instanceID string, 
 
 	for time.Now().Before(deadline) {
 		status, err := GetXTStatus(ctx, sidecarURL, instanceID)
-		if err == nil {
+		if err != nil {
+			logger.Debug("XT status poll failed (will retry): %v", err)
+		} else {
 			switch status.Status {
-			case "committed":
+			case xtStatusCommitted:
 				return true, nil
-			case "aborted":
+			case xtStatusAborted:
 				return false, nil
 			}
 		}

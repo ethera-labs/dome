@@ -27,7 +27,6 @@ func SendBridgeTx(
 	ac1 *accounts.Account,
 	ac2 *accounts.Account,
 	amount *big.Int,
-	tokenABI abi.ABI,
 	bridgeABI abi.ABI,
 ) (*types.Transaction, *types.Transaction, error) {
 	bridgeAddr := configs.Values.L2.Contracts[configs.ContractNameBridge].Address
@@ -97,7 +96,6 @@ func SendBridgeTxWithNonce(
 	ac2 *accounts.Account,
 	ac2Nonce uint64,
 	amount *big.Int,
-	tokenABI abi.ABI,
 	bridgeABI abi.ABI,
 ) (*types.Transaction, *types.Transaction, error) {
 	bridgeAddr := configs.Values.L2.Contracts[configs.ContractNameBridge].Address

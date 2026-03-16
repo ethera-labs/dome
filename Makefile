@@ -12,6 +12,7 @@ help:
 	@echo "  test-verbose    - Run tests with verbose output"
 	@echo "  test-info       - Run tests with INFO log level (usage: make test-info TEST_NAME=<test_name>)"
 	@echo "  test-debug      - Run tests with DEBUG log level (usage: make test-debug TEST_NAME=<test_name>)"
+	@echo "  test-localnet   - Run tests with local-testnet Docker log capture (usage: make test-localnet [TEST_NAME=<test_name>])"
 	@echo "  smoke-test      - Run only smoke tests"
 	@echo "  stress-test     - Run only stress tests"
 	@echo "  deps            - Download and tidy dependencies"
@@ -67,6 +68,11 @@ test-debug: build
 		echo "Running test '$(TEST_NAME)' with DEBUG log level..."; \
 		LOG_LEVEL=DEBUG $(TEST_BINARY) -test.v -test.count=1 -test.run=$(TEST_NAME); \
 	fi
+
+# Run tests with local-testnet Docker log capture alongside test output.
+# Override CONTAINERS env var (space-separated) to target different container names.
+test-localnet: build
+	@./scripts/test-with-localnet-logs.sh $(TEST_NAME)
 
 # Run only smoke tests
 smoke-test: build
