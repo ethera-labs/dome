@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	xtPollInterval  = 100 * time.Millisecond
+	xtPollInterval    = 100 * time.Millisecond
 	xtStatusCommitted = "committed"
 	xtStatusAborted   = "aborted"
 )

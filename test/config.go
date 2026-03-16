@@ -20,8 +20,8 @@ var (
 	TestRollupB  *rollup.Rollup
 	TestAccountA *accounts.Account
 	TestAccountB *accounts.Account
-	BridgeABI abi.ABI
-	TokenABI  abi.ABI
+	BridgeABI    abi.ABI
+	TokenABI     abi.ABI
 )
 
 func setup(ctx context.Context) {

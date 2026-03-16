@@ -18,6 +18,7 @@ help:
 	@echo "  deps            - Download and tidy dependencies"
 	@echo "  clean           - Clean build artifacts"
 	@echo "  lint            - Run linter"
+	@echo "  lint-fix        - Run linter and auto-fix issues"
 	@echo "  docker-build    - Build Docker image (usage: make docker-build [DOCKER_TAG=tag])"
 
 # Ensure config.yaml exists (create from example if needed)
@@ -101,10 +102,15 @@ lint: ensure-config
 	@echo "Running linter..."
 	golangci-lint run -v
 
+# Run linter and auto-fix issues
+lint-fix: ensure-config
+	@echo "Running linter with auto-fix..."
+	golangci-lint run --fix
+
 # Install linter (if not already installed)
 install-linter:
 	@echo "Installing golangci-lint..."
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$(go env GOPATH)/bin v1.54.2
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$(go env GOPATH)/bin latest
 
 # Build Docker image
 docker-build:
