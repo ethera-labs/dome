@@ -3,6 +3,7 @@ package test
 import (
 	"encoding/hex"
 	"math/big"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,8 +62,6 @@ func TestStressBridgeSameAccount(t *testing.T) {
 		time.Sleep(delay)
 	}
 
-	logger.Info("Waiting 30s until we check the txs...")
-	time.Sleep(30 * time.Second)
 	for _, tx := range txsA {
 		_, receipt, err := transactions.GetTransactionDetails(ctx, tx.Hash(), TestRollupA)
 		require.NoError(t, err)
@@ -115,18 +114,30 @@ func TestStressBridgeDifferentAccounts(t *testing.T) {
 	require.NoError(t, err)
 
 	logger.Info("Minting tokens to all accounts...")
+	var mintWg sync.WaitGroup
 	for _, acc := range accountsOnRollupA {
-		tx, hash, err := helpers.SendMintTx(t, acc, mintedAndTransferredAmount, TokenABI)
-		require.NoError(t, err)
-		require.NotNil(t, tx)
-		require.NotNil(t, hash)
+		acc := acc
+		mintWg.Add(1)
+		go func() {
+			defer mintWg.Done()
+			_, _, err := helpers.SendMintTx(t, acc, mintedAndTransferredAmount, TokenABI)
+			require.NoError(t, err)
+		}()
 	}
+	mintWg.Wait()
 
 	logger.Info("Approving tokens for the bridge contract...")
+	var approveWg sync.WaitGroup
 	for _, acc := range accountsOnRollupA {
-		_, _, err := helpers.ApproveTokens(t, acc, bridgeAddress, TokenABI)
-		require.NoError(t, err)
+		acc := acc
+		approveWg.Add(1)
+		go func() {
+			defer approveWg.Done()
+			_, _, err := helpers.ApproveTokens(t, acc, bridgeAddress, TokenABI)
+			require.NoError(t, err)
+		}()
 	}
+	approveWg.Wait()
 
 	var txsA []*types.Transaction
 	var txsB []*types.Transaction
@@ -140,8 +151,6 @@ func TestStressBridgeDifferentAccounts(t *testing.T) {
 		time.Sleep(delay)
 	}
 
-	logger.Info("Waiting 30s until we check the txs...")
-	time.Sleep(30 * time.Second)
 	for _, tx := range txsA {
 		_, receipt, err := transactions.GetTransactionDetails(ctx, tx.Hash(), TestRollupA)
 		require.NoError(t, err)
@@ -234,8 +243,6 @@ func TestStressMultipleAccountsAndMultipleTxs(t *testing.T) {
 		}
 	}
 
-	logger.Info("Waiting 30s until we check the txs...")
-	time.Sleep(30 * time.Second)
 	for _, tx := range txsA {
 		_, receipt, err := transactions.GetTransactionDetails(ctx, tx.Hash(), TestRollupA)
 		require.NoError(t, err)
@@ -289,7 +296,7 @@ func TestStressAtoBAndBtoA(t *testing.T) {
 	var txsBtoAb []*types.Transaction
 	var txsBtoAa []*types.Transaction
 
-	totalNumOfTxs := numOfTxs / 2
+	totalNumOfTxs := (numOfTxs + 1) / 2
 	for i := 0; i < totalNumOfTxs; i++ {
 		aNonceAtoB := nonceA + uint64(2*i)
 		bNonceAtoB := nonceB + uint64(2*i)
@@ -310,9 +317,6 @@ func TestStressAtoBAndBtoA(t *testing.T) {
 		require.NoError(t, err)
 		time.Sleep(delay)
 	}
-
-	logger.Info("Waiting 30s until we check the txs...")
-	time.Sleep(30 * time.Second)
 
 	for _, tx := range txsAtoBa {
 		_, receipt, err := transactions.GetTransactionDetails(ctx, tx.Hash(), TestRollupA)
@@ -394,8 +398,6 @@ func TestStressNormalTxsMixWithCrossRollupTxs(t *testing.T) {
 		time.Sleep(delay)
 	}
 
-	logger.Info("Waiting 30s until we check the txs...")
-	time.Sleep(30 * time.Second)
 	for _, tx := range txsSelfMove {
 		_, receipt, err := transactions.GetTransactionDetails(ctx, tx.Hash(), TestRollupA)
 		require.NoError(t, err)
