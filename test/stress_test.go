@@ -12,6 +12,7 @@ import (
 	"github.com/ethera-labs/dome/internal/helpers"
 	"github.com/ethera-labs/dome/internal/logger"
 	"github.com/ethera-labs/dome/internal/transactions"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,7 @@ const (
 	numOfAccounts               = 25
 	numOfTxsForMultipleAccounts = 5
 	numOfAccountsForMultipleTxs = 5
+	numMixedTxs                 = 25
 	delay                       = 100 * time.Millisecond
 )
 
@@ -347,13 +349,17 @@ func TestStressAtoBAndBtoA(t *testing.T) {
 	require.Equal(t, initialBalanceB, balanceBAfter)
 }
 
-// TestStressNormalTxsMixWithCrossRollupTxs interleaves normal self-transfers with bridge XTs.
+// TestStressNormalTxsMixWithCrossRollupTxs submits numMixedTxs interleaved pairs of a
+// bridge XT and a normal self-transfer from the same account. Nonces are derived via
+// auto-nonce on each call so the builder's XtPool reservation is reflected before the
+// self-transfer nonce is fetched. All XTs are submitted before polling for decisions.
 func TestStressNormalTxsMixWithCrossRollupTxs(t *testing.T) {
 	ctx := t.Context()
 	tokenAddress := configs.Values.L2.Contracts[configs.ContractNameToken].Address
+	bridgeAddr := configs.Values.L2.Contracts[configs.ContractNameBridge].Address
 
 	transferredAmount := big.NewInt(500000000000000000)
-	mintedAmount := new(big.Int).Mul(transferredAmount, big.NewInt(numOfTxs))
+	mintedAmount := new(big.Int).Mul(transferredAmount, big.NewInt(numMixedTxs))
 
 	tx, hash, err := helpers.SendMintTx(t, TestAccountA, mintedAmount, TokenABI)
 	require.NoError(t, err)
@@ -365,53 +371,99 @@ func TestStressNormalTxsMixWithCrossRollupTxs(t *testing.T) {
 	initialBalanceB, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
 
-	nonceA, err := TestAccountA.GetNonce(ctx)
-	require.NoError(t, err)
-	nonceB, err := TestAccountB.GetNonce(ctx)
-	require.NoError(t, err)
+	var xtInstanceIDs []string
+	var xtTxsA []*types.Transaction
+	var xtTxsB []*types.Transaction
+	var selfMoveTxs []*types.Transaction
 
-	var txsSelfMove []*types.Transaction
-	var txsBridgeA []*types.Transaction
-	var txsBridgeB []*types.Transaction
+	for i := 0; i < numMixedTxs; i++ {
+		sessionID := transactions.GenerateRandomSessionID()
 
-	selfMoveBalanceAmount := big.NewInt(100000000000000000)
-	for i := 0; i < numOfTxs; i++ {
-		selfNonceA := nonceA + uint64(2*i)
-		bridgeNonceA := nonceA + uint64(2*i+1)
-		bridgeNonceB := nonceB + uint64(i)
-
-		// Self-move balance on rollup A (normal tx, sent directly)
-		selfTx, selfHash, err := helpers.SendSelfMoveBalanceTxWithNonce(ctx, TestAccountA, selfNonceA, selfMoveBalanceAmount)
+		calldataA, err := BridgeABI.Pack("send",
+			TestRollupB.ChainID(),
+			tokenAddress,
+			TestAccountA.GetAddress(),
+			TestAccountB.GetAddress(),
+			transferredAmount,
+			sessionID,
+			bridgeAddr,
+		)
 		require.NoError(t, err)
-		require.NotNil(t, selfTx)
-		require.NotNil(t, selfHash)
-		txsSelfMove = append(txsSelfMove, selfTx)
-		time.Sleep(delay)
 
-		// Cross-rollup bridge XT (via sidecar)
-		txA, txB, err := helpers.SendBridgeTxWithNonce(t, TestAccountA, bridgeNonceA, TestAccountB, bridgeNonceB, transferredAmount, BridgeABI)
+		xtTxA, signedBytesA, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
+			To:        bridgeAddr,
+			Value:     big.NewInt(0),
+			Gas:       900000,
+			GasTipCap: big.NewInt(1000000000),
+			GasFeeCap: big.NewInt(20000000000),
+			Data:      calldataA,
+		}, TestAccountA)
 		require.NoError(t, err)
-		require.NotNil(t, txA)
-		require.NotNil(t, txB)
-		txsBridgeA = append(txsBridgeA, txA)
-		txsBridgeB = append(txsBridgeB, txB)
-		time.Sleep(delay)
+
+		calldataB, err := BridgeABI.Pack("receiveTokens",
+			TestRollupA.ChainID(),
+			TestAccountB.GetAddress(),
+			TestAccountB.GetAddress(),
+			sessionID,
+			bridgeAddr,
+		)
+		require.NoError(t, err)
+
+		xtTxB, signedBytesB, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
+			To:        bridgeAddr,
+			Value:     big.NewInt(0),
+			Gas:       900000,
+			GasTipCap: big.NewInt(1000000000),
+			GasFeeCap: big.NewInt(20000000000),
+			Data:      calldataB,
+		}, TestAccountB)
+		require.NoError(t, err)
+
+		xtResp, err := transactions.SubmitXT(ctx, configs.Values.L2.SidecarURL, map[string][]string{
+			TestRollupA.ChainID().String(): {hexutil.Encode(signedBytesA)},
+			TestRollupB.ChainID().String(): {hexutil.Encode(signedBytesB)},
+		})
+		require.NoError(t, err)
+
+		xtInstanceIDs = append(xtInstanceIDs, xtResp.InstanceID)
+		xtTxsA = append(xtTxsA, xtTxA)
+		xtTxsB = append(xtTxsB, xtTxB)
+
+		selfTx, _, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
+			To:        TestAccountA.GetAddress(),
+			Value:     big.NewInt(100000000000000000),
+			Gas:       25000,
+			GasTipCap: big.NewInt(1000000000),
+			GasFeeCap: big.NewInt(20000000000),
+		}, TestAccountA)
+		require.NoError(t, err)
+		require.Greater(t, selfTx.Nonce(), xtTxA.Nonce())
+
+		_, err = transactions.SendTransaction(ctx, selfTx, TestRollupA.RPCURL())
+		require.NoError(t, err)
+		selfMoveTxs = append(selfMoveTxs, selfTx)
 	}
 
-	for _, tx := range txsSelfMove {
+	for _, instanceID := range xtInstanceIDs {
+		committed, err := transactions.WaitForDecision(ctx, configs.Values.L2.SidecarURL, instanceID, 60*time.Second)
+		require.NoError(t, err)
+		require.True(t, committed)
+	}
+
+	for _, tx := range xtTxsA {
 		_, receipt, err := transactions.GetTransactionDetails(ctx, tx.Hash(), TestRollupA)
 		require.NoError(t, err)
 		require.NotNil(t, receipt)
 		require.Equal(t, types.ReceiptStatusSuccessful, receipt.Status, "tx %s", tx.Hash().Hex())
 	}
-	for _, tx := range txsBridgeA {
-		_, receipt, err := transactions.GetTransactionDetails(ctx, tx.Hash(), TestRollupA)
-		require.NoError(t, err)
-		require.NotNil(t, receipt)
-		require.Equal(t, types.ReceiptStatusSuccessful, receipt.Status, "tx %s", tx.Hash().Hex())
-	}
-	for _, tx := range txsBridgeB {
+	for _, tx := range xtTxsB {
 		_, receipt, err := transactions.GetTransactionDetails(ctx, tx.Hash(), TestRollupB)
+		require.NoError(t, err)
+		require.NotNil(t, receipt)
+		require.Equal(t, types.ReceiptStatusSuccessful, receipt.Status, "tx %s", tx.Hash().Hex())
+	}
+	for _, tx := range selfMoveTxs {
+		_, receipt, err := transactions.GetTransactionDetails(ctx, tx.Hash(), TestRollupA)
 		require.NoError(t, err)
 		require.NotNil(t, receipt)
 		require.Equal(t, types.ReceiptStatusSuccessful, receipt.Status, "tx %s", tx.Hash().Hex())
@@ -421,6 +473,7 @@ func TestStressNormalTxsMixWithCrossRollupTxs(t *testing.T) {
 	require.NoError(t, err)
 	balanceBAfter, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	require.Equal(t, new(big.Int).Sub(initialBalanceA, mintedAmount), balanceAAfter)
-	require.Equal(t, new(big.Int).Add(initialBalanceB, mintedAmount), balanceBAfter)
+	expectedSent := new(big.Int).Mul(transferredAmount, big.NewInt(numMixedTxs))
+	require.Equal(t, new(big.Int).Sub(initialBalanceA, expectedSent), balanceAAfter)
+	require.Equal(t, new(big.Int).Add(initialBalanceB, expectedSent), balanceBAfter)
 }
