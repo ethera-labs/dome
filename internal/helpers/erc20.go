@@ -6,20 +6,18 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/compose-network/dome/internal/logger"
+	"github.com/ethera-labs/dome/internal/logger"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/require"
 
-	"github.com/compose-network/dome/configs"
-	"github.com/compose-network/dome/internal/accounts"
-	"github.com/compose-network/dome/internal/transactions"
+	"github.com/ethera-labs/dome/configs"
+	"github.com/ethera-labs/dome/internal/accounts"
+	"github.com/ethera-labs/dome/internal/transactions"
 )
 
-/*
-MintTokens mints tokens to the given account
-*/
+// SendMintTx mints tokens to the given account.
 func SendMintTx(t *testing.T, ac *accounts.Account, amount *big.Int, tokenABI abi.ABI) (*types.Transaction, common.Hash, error) {
 	tokenAddress := configs.Values.L2.Contracts[configs.ContractNameToken].Address
 
@@ -39,9 +37,8 @@ func SendMintTx(t *testing.T, ac *accounts.Account, amount *big.Int, tokenABI ab
 		Data:      calldata,
 	}
 
-	tx, signedTransaction, err := transactions.CreateTransaction(t.Context(), transactionDetails, ac)
+	tx, _, err := transactions.CreateTransaction(t.Context(), transactionDetails, ac)
 	require.NoError(t, err)
-	require.NotNil(t, signedTransaction)
 	hash, err := transactions.SendTransaction(t.Context(), tx, ac.GetRollup().RPCURL())
 	logger.Info("Mint transaction sent successfully: %s", hash)
 	require.NoError(t, err)
@@ -52,10 +49,8 @@ func SendMintTx(t *testing.T, ac *accounts.Account, amount *big.Int, tokenABI ab
 	return tx, hash, nil
 }
 
-/*
-ApproveTokens approves max uint256 of tokens to the spender.
-It is used in normal tests for approving tokens from spawned accounts for the bridge contract.
-*/
+// ApproveTokens approves max uint256 of tokens to the spender.
+// It is used in normal tests for approving tokens from spawned accounts for the bridge contract.
 func ApproveTokens(
 	t *testing.T,
 	ac *accounts.Account,
@@ -84,9 +79,8 @@ func ApproveTokens(
 		Data:      calldata,
 	}
 
-	tx, signedTransaction, err := transactions.CreateTransaction(t.Context(), transactionDetails, ac)
+	tx, _, err := transactions.CreateTransaction(t.Context(), transactionDetails, ac)
 	require.NoError(t, err)
-	require.NotNil(t, signedTransaction)
 	hash, err := transactions.SendTransaction(t.Context(), tx, ac.GetRollup().RPCURL())
 	require.NoError(t, err)
 	_, receipt, err := transactions.GetTransactionDetails(t.Context(), hash, ac.GetRollup())
@@ -97,11 +91,9 @@ func ApproveTokens(
 	return tx, hash, nil
 }
 
-/*
-DefaultApproveTokens approves for the main accounts the maximum amount of tokens to the spender.
-It is used in config.go without testing context to be sure the main accounts always have the maximum amount of tokens approved.
-*/
-func DefaultApproveTokens(
+// ApproveTokensCtx approves for the main accounts the maximum amount of tokens to the spender.
+// It is used in config.go without testing context to be sure the main accounts always have the maximum amount of tokens approved.
+func ApproveTokensCtx(
 	ctx context.Context,
 	ac *accounts.Account,
 	spender common.Address,
@@ -119,9 +111,6 @@ func DefaultApproveTokens(
 	if err != nil {
 		return nil, common.Hash{}, err
 	}
-	if calldata == nil {
-		return nil, common.Hash{}, fmt.Errorf("calldata is nil")
-	}
 
 	transactionDetails := transactions.TransactionDetails{
 		To:        tokenAddress,
@@ -132,12 +121,9 @@ func DefaultApproveTokens(
 		Data:      calldata,
 	}
 
-	tx, signedTransaction, err := transactions.CreateTransaction(ctx, transactionDetails, ac)
+	tx, _, err := transactions.CreateTransaction(ctx, transactionDetails, ac)
 	if err != nil {
 		return nil, common.Hash{}, err
-	}
-	if signedTransaction == nil {
-		return nil, common.Hash{}, fmt.Errorf("signed transaction is nil")
 	}
 	hash, err := transactions.SendTransaction(ctx, tx, ac.GetRollup().RPCURL())
 	if err != nil {
@@ -151,5 +137,5 @@ func DefaultApproveTokens(
 		return nil, common.Hash{}, fmt.Errorf("approve transaction failed")
 	}
 	logger.Info("Approve transaction executed successfully: %s", hash)
-	return tx, hash, err
+	return tx, hash, nil
 }

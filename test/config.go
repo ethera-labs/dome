@@ -6,11 +6,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/compose-network/dome/configs"
-	"github.com/compose-network/dome/internal/accounts"
-	"github.com/compose-network/dome/internal/helpers"
-	"github.com/compose-network/dome/internal/logger"
-	"github.com/compose-network/dome/internal/rollup"
+	"github.com/ethera-labs/dome/configs"
+	"github.com/ethera-labs/dome/internal/accounts"
+	"github.com/ethera-labs/dome/internal/helpers"
+	"github.com/ethera-labs/dome/internal/logger"
+	"github.com/ethera-labs/dome/internal/rollup"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 )
 
@@ -22,7 +22,6 @@ var (
 	TestAccountB *accounts.Account
 	BridgeABI    abi.ABI
 	TokenABI     abi.ABI
-	pingPongABI  abi.ABI
 )
 
 func setup(ctx context.Context) {
@@ -61,17 +60,12 @@ func setup(ctx context.Context) {
 		panic("Failed to parse ABI: " + err.Error())
 	}
 
-	pingPongABI, err = abi.JSON(strings.NewReader(contractConfigs[configs.ContractNamePingPong].ABI))
-	if err != nil {
-		panic("Failed to parse ABI: " + err.Error())
-	}
-
 	// approve tokens for the main accounts
-	_, _, err = helpers.DefaultApproveTokens(context.Background(), TestAccountA, configs.Values.L2.Contracts[configs.ContractNameBridge].Address, TokenABI)
+	_, _, err = helpers.ApproveTokensCtx(context.Background(), TestAccountA, configs.Values.L2.Contracts[configs.ContractNameBridge].Address, TokenABI)
 	if err != nil {
 		panic("Failed to approve tokens for TestAccountA: " + err.Error())
 	}
-	_, _, err = helpers.DefaultApproveTokens(context.Background(), TestAccountB, configs.Values.L2.Contracts[configs.ContractNameBridge].Address, TokenABI)
+	_, _, err = helpers.ApproveTokensCtx(context.Background(), TestAccountB, configs.Values.L2.Contracts[configs.ContractNameBridge].Address, TokenABI)
 	if err != nil {
 		panic("Failed to approve tokens for TestAccountB: " + err.Error())
 	}

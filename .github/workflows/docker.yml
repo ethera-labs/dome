@@ -23,7 +23,7 @@ env:
   IMAGE_REGISTRY: ghcr.io
   DOCKERFILE_PATH: build/Dockerfile
   IMAGE_DESCRIPTION: |
-    This Docker image runs a comprehensive set of Compose Network tests.
+    This Docker image runs a comprehensive set of Ethera Labs tests.
 
 jobs:
   docker:

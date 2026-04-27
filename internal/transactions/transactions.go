@@ -8,13 +8,18 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/compose-network/dome/internal/accounts"
-	"github.com/compose-network/dome/internal/logger"
-	"github.com/compose-network/dome/internal/rollup"
+	"github.com/ethera-labs/dome/internal/accounts"
+	"github.com/ethera-labs/dome/internal/logger"
+	"github.com/ethera-labs/dome/internal/rollup"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+)
+
+const (
+	txConfirmRetryInterval = 600 * time.Millisecond
+	txConfirmMaxRetries    = 30
 )
 
 type TransactionDetails struct {
@@ -54,7 +59,7 @@ func CreateTransaction(ctx context.Context, tx TransactionDetails, ac *accounts.
 	transaction := types.NewTx(txData)
 	signedTransaction, err := types.SignTx(transaction, types.NewLondonSigner(ac.GetRollup().ChainID()), privateKey)
 	if err != nil {
-		logger.Error("failed to sign transaction: %w", err)
+		logger.Error("failed to sign transaction: %v", err)
 		return nil, nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 	logger.Info("Transaction signed successfully: %s", signedTransaction.Hash())
@@ -77,7 +82,7 @@ func CreateTransactionWithNonce(ctx context.Context, tx TransactionDetails, ac *
 
 	txData := &types.DynamicFeeTx{
 		ChainID:    ac.GetRollup().ChainID(),
-		Nonce:      nonce, // use the nonce provided
+		Nonce:      nonce,
 		To:         &tx.To,
 		Value:      tx.Value,
 		Gas:        tx.Gas,
@@ -90,7 +95,7 @@ func CreateTransactionWithNonce(ctx context.Context, tx TransactionDetails, ac *
 	transaction := types.NewTx(txData)
 	signedTransaction, err := types.SignTx(transaction, types.NewLondonSigner(ac.GetRollup().ChainID()), privateKey)
 	if err != nil {
-		logger.Error("failed to sign transaction: %w", err)
+		logger.Error("failed to sign transaction: %v", err)
 		return nil, nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 	logger.Info("Transaction signed successfully: %s", signedTransaction.Hash())
@@ -144,16 +149,13 @@ func GetTransactionDetails(ctx context.Context, txHash common.Hash, rollup *roll
 	startTime := time.Now()
 
 	// Retry counter for "not found" errors
-	maxRetries := 10
+	maxRetries := txConfirmMaxRetries
 	retryCount := 0
-	retryInterval := 600 * time.Millisecond
+	retryInterval := txConfirmRetryInterval
 
-	// Poll for transaction status every 500 milliseconds until confirmed or failed
 	for {
-		// Get transaction by hash
 		tx, isPending, err := client.TransactionByHash(ctx, txHash)
 		if err != nil {
-			// if transaction did not reach the RPC yet, we retry every 500 milliseconds until it does, max 10 retries
 			if errors.Is(err, ethereum.NotFound) {
 				retryCount++
 				if retryCount > maxRetries {
@@ -173,7 +175,6 @@ func GetTransactionDetails(ctx context.Context, txHash common.Hash, rollup *roll
 		if isPending {
 			logger.Debug("Transaction %s is still pending, waiting %s before retry...", txHash.Hex(), retryInterval)
 
-			// Wait 500 ms before retrying
 			select {
 			case <-ctx.Done():
 				return nil, nil, fmt.Errorf("context cancelled while waiting for transaction %s", txHash.Hex())
@@ -189,52 +190,51 @@ func GetTransactionDetails(ctx context.Context, txHash common.Hash, rollup *roll
 		}
 
 		duration := time.Since(startTime)
-		logger.Info("Successfully retrieved transaction details on %s for hash: %s)", rollup.Name(), txHash.Hex())
+		logger.Info("Successfully retrieved transaction details on %s for hash: %s", rollup.Name(), txHash.Hex())
 		logger.Info("Transaction took %s to be processed", duration)
 		return tx, receipt, nil
 	}
 }
 
-/*
-DistributeEth distributes ETH to the given recipients. Used for distributing ETH from one account to multiple accounts.
-*/
+// DistributeEth distributes ETH to the given recipients. Used for distributing ETH from one account to multiple accounts.
 func DistributeEth(ctx context.Context, sponsor *accounts.Account, recipients []*accounts.Account, amount *big.Int) error {
+	if len(recipients) == 0 {
+		return nil
+	}
+
 	nonce, err := sponsor.GetNonce(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get nonce: %w", err)
 	}
 
+	var lastTx *types.Transaction
 	for _, recipient := range recipients {
-
-		transactionBDetails := TransactionDetails{
+		tx, _, err := CreateTransactionWithNonce(ctx, TransactionDetails{
 			To:        recipient.GetAddress(),
 			Value:     amount,
 			Gas:       25000,
-			GasTipCap: big.NewInt(1000000),
-			GasFeeCap: big.NewInt(2000000),
+			GasTipCap: big.NewInt(1000000000),
+			GasFeeCap: big.NewInt(20000000000),
 			Data:      nil,
-		}
-
-		tx, _, err := CreateTransactionWithNonce(ctx, transactionBDetails, sponsor, nonce)
+		}, sponsor, nonce)
 		if err != nil {
 			return fmt.Errorf("failed to create transaction: %w", err)
 		}
-		_, err = SendTransaction(ctx, tx, sponsor.GetRollup().RPCURL())
-		if err != nil {
+		if _, err = SendTransaction(ctx, tx, sponsor.GetRollup().RPCURL()); err != nil {
 			return fmt.Errorf("failed to send transaction: %w", err)
 		}
-
-		// check if transaction is successful
-		_, receipt, err := GetTransactionDetails(ctx, tx.Hash(), sponsor.GetRollup())
-		if err != nil {
-			return fmt.Errorf("failed to get transaction receipt: %w", err)
-		}
-		if receipt.Status != types.ReceiptStatusSuccessful {
-			return fmt.Errorf("transaction failed: %s", tx.Hash().Hex())
-		}
-		// increment nonce for next transaction
+		lastTx = tx
 		nonce++
+	}
 
+	// All txs use sequential nonces from the same sponsor, so confirming the
+	// last one guarantees all preceding ones are also included.
+	_, receipt, err := GetTransactionDetails(ctx, lastTx.Hash(), sponsor.GetRollup())
+	if err != nil {
+		return fmt.Errorf("failed to get transaction receipt: %w", err)
+	}
+	if receipt.Status != types.ReceiptStatusSuccessful {
+		return fmt.Errorf("transaction failed: %s", lastTx.Hash().Hex())
 	}
 	return nil
 }

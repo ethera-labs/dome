@@ -1,31 +1,32 @@
 l2:
+  # Sidecar HTTP API URL (XTs are submitted here)
+  sidecar-url: http://localhost:17090
+
   chain-configs:
     rollup-a:
       # Private key (with or without 0x prefix) for a funded account
       pk: 0000000000000000000000000000000000000000000000000000000000000000
       # Chain ID
       id: 77777
-      # JSON-RPC
-      rpc-url: http://localhost:18545
+      # JSON-RPC (op-rbuilder, not op-geth — builder includes txs in blocks)
+      rpc-url: http://localhost:17545
 
     rollup-b:
-       # Private key (with or without 0x prefix) for a funded account
+      # Private key (with or without 0x prefix) for a funded account
       pk: 0000000000000000000000000000000000000000000000000000000000000000
       # Chain ID
       id: 88888
-      # JSON-RPC
-      rpc-url: http://localhost:28545
+      # JSON-RPC (op-rbuilder, not op-geth — builder includes txs in blocks)
+      rpc-url: http://localhost:27545
 
   # Smart contracts deployed to both rollups
-  # These are typically deployed at the same address on both chains
-  # which is why this section is shared rather than duplicated per rollup
   contracts:
-      bridge:
-        address: 0x
-        abi: ''
-      ping-pong: 
-        address: 0x
-        abi: ''
-      token:
-        address: 0x
-        abi: ''
+    bridge:
+      address: 0x
+      abi: ''
+    ping-pong:
+      address: 0x
+      abi: ''
+    token:
+      address: 0x
+      abi: ''
