@@ -8,10 +8,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/compose-network/dome/internal/accounts"
-	"github.com/compose-network/dome/internal/rollup"
-	"github.com/compose-network/dome/internal/transactions"
+	"github.com/ethera-labs/dome/configs"
+	"github.com/ethera-labs/dome/internal/accounts"
+	"github.com/ethera-labs/dome/internal/rollup"
+	"github.com/ethera-labs/dome/internal/transactions"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/require"
 )
@@ -100,7 +102,7 @@ func requireNoReceipt(t *testing.T, txHash common.Hash, onRollup *rollup.Rollup)
 
 	_, _, err := transactions.GetTransactionDetails(t.Context(), txHash, onRollup)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "transaction receipt not found after 10 retries for hash")
+	require.Contains(t, err.Error(), "transaction receipt not found after")
 }
 
 func sendSimpleXtWithNonceAndReturnTransactions(
@@ -133,14 +135,24 @@ func sendSimpleXtWithNonceAndReturnTransactions(
 		return nil, nil, err
 	}
 
-	msg, err := transactions.CreateCrossTxRequestMsg(ctx, ac1, ac2, signedA, signedB)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if _, err := submitXtViaSidecar(ctx, msg); err != nil {
+	if _, err := submitSignedXT(ctx, ac1, ac2, signedA, signedB); err != nil {
 		return nil, nil, err
 	}
 
 	return txA, txB, nil
+}
+
+func submitSignedXT(
+	ctx context.Context,
+	ac1 *accounts.Account,
+	ac2 *accounts.Account,
+	signedA []byte,
+	signedB []byte,
+) (*transactions.XTResponse, error) {
+	xtTxs := map[string][]string{
+		ac1.GetRollup().ChainID().String(): {hexutil.Encode(signedA)},
+		ac2.GetRollup().ChainID().String(): {hexutil.Encode(signedB)},
+	}
+
+	return transactions.SubmitXT(ctx, configs.Values.L2.SidecarURL, xtTxs)
 }

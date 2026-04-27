@@ -6,10 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/compose-network/dome/configs"
-	"github.com/compose-network/dome/internal/accounts"
-	"github.com/compose-network/dome/internal/rollup"
-	"github.com/compose-network/dome/internal/transactions"
+	"github.com/ethera-labs/dome/configs"
+	"github.com/ethera-labs/dome/internal/accounts"
+	"github.com/ethera-labs/dome/internal/rollup"
+	"github.com/ethera-labs/dome/internal/transactions"
 )
 
 // TestConcurrentXTsSameNonce submits two XTs with identical nonces concurrently.
@@ -172,11 +172,6 @@ func sendSimpleXtWithNonce(
 	}
 	_ = txB
 
-	msg, err := transactions.CreateCrossTxRequestMsg(ctx, ac1, ac2, signedA, signedB)
-	if err != nil {
-		return err
-	}
-
-	_, err = submitXtViaSidecar(ctx, msg)
+	_, err = submitSignedXT(ctx, ac1, ac2, signedA, signedB)
 	return err
 }
