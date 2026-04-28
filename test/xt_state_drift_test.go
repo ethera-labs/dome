@@ -21,16 +21,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCommittedXtCanStillFailAfterDestinationStateDrift is a best-effort
-// reproducer for the current architecture gap:
-//  1. a destination-chain XT tx simulates successfully against latest canonical state,
-//  2. a queued normal mempool tx later mutates that state before block execution,
-//  3. sidecar has already decided "committed", but the destination XT tx never lands.
+// TestCommittedXtCanStillFailAfterDestinationStateDrift encodes the desired
+// invariant for XT execution:
+//  1. if the system commits an XT, the destination leg must still land, even if
+//     unrelated pending mempool state tries to invalidate the earlier
+//     simulation assumptions; or
+//  2. the system must abort the XT before inclusion.
 //
-// The test intentionally demonstrates that nonce reservation is not equivalent
-// to state locking. This race is environment-sensitive; if the destination leg
-// still lands on the current stack, the reproducer is skipped rather than
-// failing the full suite.
+// Today the stack can violate that invariant by committing an XT based on
+// simulation against latest canonical state and then executing it later on a
+// different builder state after unrelated mempool transactions have changed the
+// destination-chain preconditions. In the buggy case this test fails with:
+// committed XT + missing destination receipt.
 func TestCommittedXtCanStillFailAfterDestinationStateDrift(t *testing.T) {
 	ctx := t.Context()
 	ensureXtEndpoint(t)
@@ -94,7 +96,12 @@ func TestCommittedXtCanStillFailAfterDestinationStateDrift(t *testing.T) {
 
 	committed, err := transactions.WaitForDecision(ctx, configs.Values.L2.SidecarURL, submitResp.InstanceID, waitCommittedTimeout)
 	require.NoError(t, err)
-	require.True(t, committed, "XT must have simulated and decided commit before we unlock the revoke tx")
+
+	if !committed {
+		requireNoReceipt(t, originTx.Hash(), xtSourceA.GetRollup())
+		requireNoReceipt(t, destinationTx.Hash(), xtDestinationB.GetRollup())
+		return
+	}
 
 	// Unlock the queued revoke only after sidecar already committed the XT. The
 	// revoke itself was invisible to simulation because sidecar simulates against
@@ -110,18 +117,12 @@ func TestCommittedXtCanStillFailAfterDestinationStateDrift(t *testing.T) {
 	require.Zero(t, allowanceAfter.Sign(), "queued revoke must execute before XT block execution")
 
 	originReceipt := requireSuccessfulReceipt(t, originTx.Hash(), xtSourceA.GetRollup())
-
-	_, destinationReceipt, err := transactions.GetTransactionDetails(ctx, destinationTx.Hash(), TestRollupB)
-	if err == nil {
-		require.NotNil(t, destinationReceipt)
-		t.Skipf(
-			"state-drift race did not reproduce on this stack: destination XT tx landed in block %d despite the queued revoke",
-			destinationReceipt.BlockNumber.Uint64(),
-		)
-	}
-
-	requireNoReceipt(t, destinationTx.Hash(), TestRollupB)
-	t.Logf("origin XT tx was included in block %d while destination XT tx never landed", originReceipt.BlockNumber.Uint64())
+	destinationReceipt := requireSuccessfulReceipt(t, destinationTx.Hash(), xtDestinationB.GetRollup())
+	t.Logf(
+		"XT remained atomic under state drift attempt: origin block=%d destination block=%d",
+		originReceipt.BlockNumber.Uint64(),
+		destinationReceipt.BlockNumber.Uint64(),
+	)
 }
 
 func newFundedAccountPair(t *testing.T) (*accounts.Account, *accounts.Account) {
