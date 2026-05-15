@@ -31,7 +31,7 @@ const (
 	defaultComposeL2ToL2Bridge = "0x6e166073b5dd5fd53b33fed5a7bd9c104c6c6ebd"
 
 	// 0.001 ETH keeps the demo cheap while still producing a visible balance delta.
-	defaultBridgeAmountWei = "1000000000000000"
+	defaultBridgeAmountWei   = "1000000000000000"
 	defaultSimpleTransferWei = "1"
 
 	defaultDecisionTimeout = 2 * time.Minute

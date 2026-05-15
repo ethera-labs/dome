@@ -2,7 +2,6 @@ package demo
 
 import (
 	"context"
-	"fmt"
 	"math/big"
 	"os"
 	"strings"
@@ -230,37 +229,6 @@ func callERC20BigInt(
 
 func ethClientForRollup(ctx context.Context, chain *rollup.Rollup) (*ethclient.Client, error) {
 	return ethclient.DialContext(ctx, chain.RPCURL())
-}
-
-func waitForXTStatus(
-	ctx context.Context,
-	sidecarURL string,
-	instanceID string,
-	targets map[string]bool,
-	timeout time.Duration,
-) (*transactions.XTStatus, error) {
-	deadline := time.Now().Add(timeout)
-	var last *transactions.XTStatus
-	for time.Now().Before(deadline) {
-		status, err := transactions.GetXTStatus(ctx, sidecarURL, instanceID)
-		if err == nil {
-			last = status
-			if targets[status.Status] {
-				return status, nil
-			}
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-
-	if last != nil {
-		return last, fmt.Errorf("timeout waiting for XT status targets after %s; last status=%s", timeout, last.Status)
-	}
-	return nil, fmt.Errorf("timeout waiting for XT status targets after %s", timeout)
 }
 
 func watchXTStatus(
