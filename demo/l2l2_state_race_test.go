@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethera-labs/dome/internal/accounts"
 	"github.com/ethera-labs/dome/internal/rollup"
@@ -179,6 +180,10 @@ func TestDemoStageXTDefersMempoolAllowanceRevocation(t *testing.T) {
 	_, err = transactions.SendTransaction(ctx, revokeTx, envOrDefault("DOME_DEMO_STATE_RACE_MEMPOOL_RPC", rollupA.RPCURL()))
 	require.NoError(t, err)
 
+	committed, err := transactions.WaitForDecision(ctx, sidecarURL, xtResp.InstanceID, 3*time.Minute)
+	require.NoError(t, err)
+	require.True(t, committed, "XT must commit; the pool gate should defer unrelated mempool txs until after XT execution")
+
 	_, xtAReceipt, err := transactions.GetTransactionDetails(ctx, xtTx.Hash(), rollupA)
 	require.NoError(t, err)
 	require.Equal(t, types.ReceiptStatusSuccessful, xtAReceipt.Status, "XT leg A must succeed")
@@ -186,12 +191,17 @@ func TestDemoStageXTDefersMempoolAllowanceRevocation(t *testing.T) {
 	_, revokeReceipt, err := transactions.GetTransactionDetails(ctx, revokeTx.Hash(), rollupA)
 	require.NoError(t, err)
 	require.Equal(t, types.ReceiptStatusSuccessful, revokeReceipt.Status)
-	require.Greater(t,
+
+	revokeAfterXT := revokeReceipt.BlockNumber.Cmp(xtAReceipt.BlockNumber) > 0 ||
+		(revokeReceipt.BlockNumber.Cmp(xtAReceipt.BlockNumber) == 0 &&
+			revokeReceipt.TransactionIndex > xtAReceipt.TransactionIndex)
+	require.True(t,
+		revokeAfterXT,
+		"revoke landed at block %d index %d, XT leg A at block %d index %d; the pool gate failed to defer unrelated mempool txs",
 		revokeReceipt.BlockNumber.Uint64(),
+		revokeReceipt.TransactionIndex,
 		xtAReceipt.BlockNumber.Uint64(),
-		"revoke landed in block %d, XT leg A in block %d; the pool gate failed to defer unrelated mempool txs",
-		revokeReceipt.BlockNumber.Uint64(),
-		xtAReceipt.BlockNumber.Uint64(),
+		xtAReceipt.TransactionIndex,
 	)
 
 	allowanceAfterRevoke := callERC20BigInt(t, ctx, rollupA, tokenAddress, tokenABI, "allowance", owner.GetAddress(), spender.GetAddress())

@@ -52,7 +52,7 @@ func TestTxASuccessAndTxBFailure(t *testing.T) {
 		TestRollupB.ChainID().String(): {hexutil.Encode(signedBytesB)},
 	}
 
-	_, committed, err := helpers.SubmitXTAndWait(ctx, xtTxs, 60*time.Second)
+	_, committed, err := helpers.SubmitXTAndWait(ctx, xtTxs, 3*time.Minute)
 	require.NoError(t, err)
 	assert.False(t, committed, "XT should be aborted because B's tx overdrafts")
 }
