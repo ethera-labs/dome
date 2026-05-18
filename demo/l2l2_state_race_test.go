@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ethera-labs/dome/internal/accounts"
 	"github.com/ethera-labs/dome/internal/rollup"
@@ -22,11 +21,9 @@ import (
 
 const (
 	defaultStateRaceAmountWei = "1"
-	defaultRaceStatusTimeout  = 5 * time.Second
-	defaultRaceFinalTimeout   = 20 * time.Second
 
 	// Minimal ERC20 ABI needed to demonstrate that normal mempool state changes
-	// can invalidate an XT that simulated successfully.
+	// are deferred while an XT is in flight.
 	erc20AllowanceRaceABI = `[
 		{
 			"type":"function",
@@ -69,7 +66,7 @@ const (
 	]`
 )
 
-func TestDemoStageXTInvalidatedByMempoolAllowanceRevocation(t *testing.T) {
+func TestDemoStageXTDefersMempoolAllowanceRevocation(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("DOME_DEMO_ENABLE_STATE_RACE")) != "1" {
 		t.Skip("set DOME_DEMO_ENABLE_STATE_RACE=1 to run the allowance revocation race test")
 	}
@@ -166,11 +163,7 @@ func TestDemoStageXTInvalidatedByMempoolAllowanceRevocation(t *testing.T) {
 		rollupB.ChainID().String(): {hexutil.Encode(signedBBytes)},
 	})
 	require.NoError(t, err)
-
-	statusCtx, cancelStatusWatch := context.WithCancel(ctx)
-	defer cancelStatusWatch()
-	sawVoted := make(chan struct{})
-	go watchXTStatus(statusCtx, sidecarURL, xtResp.InstanceID, "voted", sawVoted)
+	t.Logf("submitted XT instance=%s xt_tx=%s", xtResp.InstanceID, xtTx.Hash().Hex())
 
 	revokeData, err := tokenABI.Pack("approve", spender.GetAddress(), big.NewInt(0))
 	require.NoError(t, err)
@@ -185,23 +178,24 @@ func TestDemoStageXTInvalidatedByMempoolAllowanceRevocation(t *testing.T) {
 	require.NoError(t, err)
 	_, err = transactions.SendTransaction(ctx, revokeTx, envOrDefault("DOME_DEMO_STATE_RACE_MEMPOOL_RPC", rollupA.RPCURL()))
 	require.NoError(t, err)
+
+	_, xtAReceipt, err := transactions.GetTransactionDetails(ctx, xtTx.Hash(), rollupA)
+	require.NoError(t, err)
+	require.Equal(t, types.ReceiptStatusSuccessful, xtAReceipt.Status, "XT leg A must succeed")
+
 	_, revokeReceipt, err := transactions.GetTransactionDetails(ctx, revokeTx.Hash(), rollupA)
 	require.NoError(t, err)
 	require.Equal(t, types.ReceiptStatusSuccessful, revokeReceipt.Status)
+	require.Greater(t,
+		revokeReceipt.BlockNumber.Uint64(),
+		xtAReceipt.BlockNumber.Uint64(),
+		"revoke landed in block %d, XT leg A in block %d; the pool gate failed to defer unrelated mempool txs",
+		revokeReceipt.BlockNumber.Uint64(),
+		xtAReceipt.BlockNumber.Uint64(),
+	)
 
 	allowanceAfterRevoke := callERC20BigInt(t, ctx, rollupA, tokenAddress, tokenABI, "allowance", owner.GetAddress(), spender.GetAddress())
-	require.Zero(t, allowanceAfterRevoke.Sign(), "normal mempool tx must revoke allowance before XT inclusion")
-
-	committed, err := transactions.WaitForDecision(ctx, sidecarURL, xtResp.InstanceID, defaultRaceFinalTimeout)
-	votedBeforeTerminal := channelClosed(sawVoted)
-	if err == nil {
-		require.True(t, votedBeforeTerminal, "XT reached a terminal state before the test observed a successful simulation vote")
-		require.False(t, committed, "XT committed even though allowance was revoked by a normal mempool tx before inclusion; xt tx %s revoke tx %s", xtTx.Hash().Hex(), revokeTx.Hash().Hex())
-		return
-	}
-
-	require.True(t, votedBeforeTerminal, "XT never reached voted; it likely failed initial simulation instead of execution after mempool state changed")
-	t.Logf("XT did not commit before timeout after normal mempool revocation; instance=%s xt_tx=%s revoke_tx=%s err=%v", xtResp.InstanceID, xtTx.Hash().Hex(), revokeTx.Hash().Hex(), err)
+	require.Zero(t, allowanceAfterRevoke.Sign(), "normal mempool tx must eventually revoke allowance after XT inclusion")
 }
 
 func callERC20BigInt(
@@ -229,35 +223,4 @@ func callERC20BigInt(
 
 func ethClientForRollup(ctx context.Context, chain *rollup.Rollup) (*ethclient.Client, error) {
 	return ethclient.DialContext(ctx, chain.RPCURL())
-}
-
-func watchXTStatus(
-	ctx context.Context,
-	sidecarURL string,
-	instanceID string,
-	target string,
-	seen chan<- struct{},
-) {
-	defer close(seen)
-	for {
-		status, err := transactions.GetXTStatus(ctx, sidecarURL, instanceID)
-		if err == nil && status.Status == target {
-			return
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(25 * time.Millisecond):
-		}
-	}
-}
-
-func channelClosed(ch <-chan struct{}) bool {
-	select {
-	case <-ch:
-		return true
-	default:
-		return false
-	}
 }
