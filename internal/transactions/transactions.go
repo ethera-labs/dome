@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/ethera-labs/dome/internal/accounts"
@@ -19,8 +21,23 @@ import (
 
 const (
 	txConfirmRetryInterval = 600 * time.Millisecond
-	txConfirmMaxRetries    = 30
 )
+
+var txConfirmMaxRetries = intEnv("DOME_TX_CONFIRM_MAX_RETRIES", 30)
+
+func intEnv(name string, fallback int) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 {
+		return fallback
+	}
+
+	return value
+}
 
 type TransactionDetails struct {
 	To        common.Address

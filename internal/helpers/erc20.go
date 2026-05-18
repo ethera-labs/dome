@@ -5,17 +5,48 @@ import (
 	"fmt"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/ethera-labs/dome/internal/logger"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ethera-labs/dome/configs"
 	"github.com/ethera-labs/dome/internal/accounts"
 	"github.com/ethera-labs/dome/internal/transactions"
 )
+
+func GetTokenBalanceOrZero(ctx context.Context, ac *accounts.Account, tokenAddress common.Address, tokenABI abi.ABI) (*big.Int, error) {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		client, err := ethclient.DialContext(ctx, ac.GetRollup().RPCURL())
+		if err != nil {
+			lastErr = fmt.Errorf("failed to connect to RPC URL %s: %w", ac.GetRollup().RPCURL(), err)
+		} else {
+			code, err := client.CodeAt(ctx, tokenAddress, nil)
+			client.Close()
+			if err == nil {
+				if len(code) == 0 {
+					return big.NewInt(0), nil
+				}
+
+				return ac.GetTokensBalance(ctx, tokenAddress, tokenABI)
+			}
+			lastErr = fmt.Errorf("failed to get token code: %w", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+
+	return nil, lastErr
+}
 
 // SendMintTx mints tokens to the given account.
 func SendMintTx(t *testing.T, ac *accounts.Account, amount *big.Int, tokenABI abi.ABI) (*types.Transaction, common.Hash, error) {

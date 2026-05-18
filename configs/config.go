@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	//go:embed config.yaml
+	//go:embed config.example.yaml
 	embeddedConfig []byte
 	Values         App
 )
@@ -56,6 +56,17 @@ type (
 func init() {
 	configPath, isSet := os.LookupEnv(configPathEnvVar)
 	if !isSet {
+		for _, localPath := range []string{"configs/config.yaml", "../configs/config.yaml"} {
+			data, err := os.ReadFile(localPath)
+			if err == nil {
+				logger.Info("%s was not set, loading local configuration from %s", configPathEnvVar, localPath)
+				if err := loadConfig(data); err != nil {
+					panic(err.Error())
+				}
+				return
+			}
+		}
+
 		logger.Info("%s was not set, will use configuration values from embedded config.yaml", configPathEnvVar)
 		if err := loadConfig(embeddedConfig); err != nil {
 			panic(err.Error())
