@@ -24,9 +24,10 @@ const (
 	ChainNameRollupA ChainName = "rollup-a"
 	ChainNameRollupB ChainName = "rollup-b"
 
-	ContractNameBridge   ContractName = "bridge"
-	ContractNamePingPong ContractName = "ping-pong"
-	ContractNameToken    ContractName = "token"
+	ContractNameBridge     ContractName = "bridge"
+	ContractNameToken      ContractName = "token"
+	ContractNameMailbox    ContractName = "mailbox"
+	ContractNameCetFactory ContractName = "cet-factory"
 )
 
 type (
@@ -86,19 +87,18 @@ func loadConfig(data []byte) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Get ABI lengths for logging
 	bridgeABILen := len(Values.L2.Contracts[ContractNameBridge].ABI)
 	tokenABILen := len(Values.L2.Contracts[ContractNameToken].ABI)
-	pingPongABILen := len(Values.L2.Contracts[ContractNamePingPong].ABI)
+	mailboxABILen := len(Values.L2.Contracts[ContractNameMailbox].ABI)
 
 	logger.Info("configuration loaded: sidecar=%s rollup-a=%d(%s) rollup-b=%d(%s)",
 		Values.L2.SidecarURL,
 		Values.L2.ChainConfigs[ChainNameRollupA].ID, Values.L2.ChainConfigs[ChainNameRollupA].RPCURL,
 		Values.L2.ChainConfigs[ChainNameRollupB].ID, Values.L2.ChainConfigs[ChainNameRollupB].RPCURL)
-	logger.Info("contracts: bridge=%s(%d bytes) token=%s(%d bytes) ping-pong=%s(%d bytes)",
+	logger.Info("contracts: bridge=%s(%d bytes) token=%s(%d bytes) mailbox=%s(%d bytes)",
 		Values.L2.Contracts[ContractNameBridge].Address.Hex(), bridgeABILen,
 		Values.L2.Contracts[ContractNameToken].Address.Hex(), tokenABILen,
-		Values.L2.Contracts[ContractNamePingPong].Address.Hex(), pingPongABILen)
+		Values.L2.Contracts[ContractNameMailbox].Address.Hex(), mailboxABILen)
 	return nil
 }
 
@@ -149,17 +149,20 @@ func (a *App) validateChainConfig() error {
 
 func (a *App) validateContractsConfig() error {
 	var err error
-	if len(a.L2.Contracts) != 3 {
-		err = errors.Join(err, fmt.Errorf("exactly three contract configs must be provided"))
+	if len(a.L2.Contracts) != 4 {
+		err = errors.Join(err, fmt.Errorf("exactly four contract configs must be provided"))
 	}
 	if _, ok := a.L2.Contracts[ContractNameBridge]; !ok {
 		err = errors.Join(err, fmt.Errorf("contract config for '%s' must be provided", ContractNameBridge))
 	}
-	if _, ok := a.L2.Contracts[ContractNamePingPong]; !ok {
-		err = errors.Join(err, fmt.Errorf("contract config for '%s' must be provided", ContractNamePingPong))
-	}
 	if _, ok := a.L2.Contracts[ContractNameToken]; !ok {
 		err = errors.Join(err, fmt.Errorf("contract config for '%s' must be provided", ContractNameToken))
+	}
+	if _, ok := a.L2.Contracts[ContractNameMailbox]; !ok {
+		err = errors.Join(err, fmt.Errorf("contract config for '%s' must be provided", ContractNameMailbox))
+	}
+	if _, ok := a.L2.Contracts[ContractNameCetFactory]; !ok {
+		err = errors.Join(err, fmt.Errorf("contract config for '%s' must be provided", ContractNameCetFactory))
 	}
 
 	for name, cfg := range a.L2.Contracts {

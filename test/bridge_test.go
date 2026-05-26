@@ -38,9 +38,9 @@ func TestMintTokensCrossRollup(t *testing.T) {
 	txA, signedBytesA, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        tokenAddress,
 		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasMint,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataA,
 	}, TestAccountA)
 	require.NoError(t, err)
@@ -52,9 +52,9 @@ func TestMintTokensCrossRollup(t *testing.T) {
 	txB, signedBytesB, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        tokenAddress,
 		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasMint,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataB,
 	}, TestAccountB)
 	require.NoError(t, err)
@@ -122,49 +122,50 @@ func TestSendCrossTxBridgeFromAToB(t *testing.T) {
 
 	initialTokenBalanceA, err := TestAccountA.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	initialTokenBalanceB, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
+	// Destination side receives wrapped CET, predicted from (sourceToken, sourceChainID).
+	cetAddressOnB, err := helpers.PredictCetAddress(ctx, TestRollupB, CetFactoryABI, tokenAddress, TestRollupA.ChainID())
+	require.NoError(t, err)
+	initialCetBalanceB, err := TestAccountB.GetTokensBalance(ctx, cetAddressOnB, TokenABI)
 	require.NoError(t, err)
 
 	sessionID := transactions.GenerateRandomSessionID()
 
-	// Chain A: bridge.send
-	calldataA, err := BridgeABI.Pack("send",
+	// Chain A: bridge.bridgeERC20To
+	calldataA, err := helpers.PackBridgeERC20To(BridgeABI,
 		TestRollupB.ChainID(),
 		tokenAddress,
-		TestAccountA.GetAddress(),
-		TestAccountB.GetAddress(),
 		transferredAmount,
+		TestAccountB.GetAddress(),
 		sessionID,
-		bridgeAddr,
 	)
 	require.NoError(t, err)
 
 	txA, signedBytesA, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        bridgeAddr,
 		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasBridgeERC20To,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataA,
 	}, TestAccountA)
 	require.NoError(t, err)
 
 	// Chain B: bridge.receiveTokens
-	calldataB, err := BridgeABI.Pack("receiveTokens",
+	calldataB, err := helpers.PackBridgeReceiveTokens(BridgeABI,
 		TestRollupA.ChainID(),
-		TestAccountA.GetAddress(),
+		TestRollupB.ChainID(),
+		bridgeAddr,
 		TestAccountB.GetAddress(),
 		sessionID,
-		bridgeAddr,
 	)
 	require.NoError(t, err)
 
 	txB, signedBytesB, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        bridgeAddr,
 		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasBridgeReceive,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataB,
 	}, TestAccountB)
 	require.NoError(t, err)
@@ -214,13 +215,13 @@ func TestSendCrossTxBridgeFromAToB(t *testing.T) {
 	assert.Equal(t, *resB.tx.To(), bridgeAddr)
 	assert.True(t, bytes.Equal(resB.tx.Data(), calldataB))
 
-	// Verify balances
+	// Verify balances: source token escrowed on A, CET minted on B.
 	tokenBalanceAAfter, err := TestAccountA.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	tokenBalanceBAfter, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
+	cetBalanceBAfter, err := TestAccountB.GetTokensBalance(ctx, cetAddressOnB, TokenABI)
 	require.NoError(t, err)
-	assert.Equal(t, initialTokenBalanceA.Sub(initialTokenBalanceA, transferredAmount), tokenBalanceAAfter)
-	assert.Equal(t, initialTokenBalanceB.Add(initialTokenBalanceB, transferredAmount), tokenBalanceBAfter)
+	assert.Equal(t, new(big.Int).Sub(initialTokenBalanceA, transferredAmount), tokenBalanceAAfter)
+	assert.Equal(t, new(big.Int).Add(initialCetBalanceB, transferredAmount), cetBalanceBAfter)
 }
 
 // TestSendCrossTxBridgeFromBToA bridges tokens from chain B to chain A via sidecar.
@@ -231,49 +232,50 @@ func TestSendCrossTxBridgeFromBToA(t *testing.T) {
 
 	initialTokenBalanceB, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	initialTokenBalanceA, err := TestAccountA.GetTokensBalance(ctx, tokenAddress, TokenABI)
+	// Destination side receives wrapped CET, predicted from (sourceToken, sourceChainID).
+	cetAddressOnA, err := helpers.PredictCetAddress(ctx, TestRollupA, CetFactoryABI, tokenAddress, TestRollupB.ChainID())
+	require.NoError(t, err)
+	initialCetBalanceA, err := TestAccountA.GetTokensBalance(ctx, cetAddressOnA, TokenABI)
 	require.NoError(t, err)
 
 	sessionID := transactions.GenerateRandomSessionID()
 
-	// Chain B: bridge.send
-	calldataB, err := BridgeABI.Pack("send",
+	// Chain B: bridge.bridgeERC20To
+	calldataB, err := helpers.PackBridgeERC20To(BridgeABI,
 		TestRollupA.ChainID(),
 		tokenAddress,
-		TestAccountB.GetAddress(),
-		TestAccountA.GetAddress(),
 		transferredAmount,
+		TestAccountA.GetAddress(),
 		sessionID,
-		bridgeAddr,
 	)
 	require.NoError(t, err)
 
 	txB, signedBytesB, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        bridgeAddr,
 		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasBridgeERC20To,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataB,
 	}, TestAccountB)
 	require.NoError(t, err)
 
 	// Chain A: bridge.receiveTokens
-	calldataA, err := BridgeABI.Pack("receiveTokens",
+	calldataA, err := helpers.PackBridgeReceiveTokens(BridgeABI,
 		TestRollupB.ChainID(),
-		TestAccountB.GetAddress(),
+		TestRollupA.ChainID(),
+		bridgeAddr,
 		TestAccountA.GetAddress(),
 		sessionID,
-		bridgeAddr,
 	)
 	require.NoError(t, err)
 
 	txA, signedBytesA, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        bridgeAddr,
 		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasBridgeReceive,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataA,
 	}, TestAccountA)
 	require.NoError(t, err)
@@ -323,13 +325,13 @@ func TestSendCrossTxBridgeFromBToA(t *testing.T) {
 	assert.Equal(t, *resA.tx.To(), bridgeAddr)
 	assert.True(t, bytes.Equal(resA.tx.Data(), calldataA))
 
-	// Verify balances
+	// Verify balances: source token escrowed on B, CET minted on A.
 	tokenBalanceBAfter, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	tokenBalanceAAfter, err := TestAccountA.GetTokensBalance(ctx, tokenAddress, TokenABI)
+	cetBalanceAAfter, err := TestAccountA.GetTokensBalance(ctx, cetAddressOnA, TokenABI)
 	require.NoError(t, err)
-	assert.Equal(t, initialTokenBalanceB.Sub(initialTokenBalanceB, transferredAmount), tokenBalanceBAfter)
-	assert.Equal(t, initialTokenBalanceA.Add(initialTokenBalanceA, transferredAmount), tokenBalanceAAfter)
+	assert.Equal(t, new(big.Int).Sub(initialTokenBalanceB, transferredAmount), tokenBalanceBAfter)
+	assert.Equal(t, new(big.Int).Add(initialCetBalanceA, transferredAmount), cetBalanceAAfter)
 }
 
 // TestSendOnAAndFailingSelfMoveBalanceOnB pairs a bridge send on A with an impossible ETH transfer on B.
@@ -346,24 +348,22 @@ func TestSendOnAAndFailingSelfMoveBalanceOnB(t *testing.T) {
 
 	sessionID := transactions.GenerateRandomSessionID()
 
-	// Chain A: bridge.send (valid)
-	calldataA, err := BridgeABI.Pack("send",
+	// Chain A: bridge.bridgeERC20To (valid)
+	calldataA, err := helpers.PackBridgeERC20To(BridgeABI,
 		TestRollupB.ChainID(),
 		tokenAddress,
-		TestAccountA.GetAddress(),
-		TestAccountB.GetAddress(),
 		transferredAmount,
+		TestAccountB.GetAddress(),
 		sessionID,
-		bridgeAddr,
 	)
 	require.NoError(t, err)
 
 	_, signedBytesA, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        bridgeAddr,
 		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasBridgeERC20To,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataA,
 	}, TestAccountA)
 	require.NoError(t, err)
@@ -375,9 +375,9 @@ func TestSendOnAAndFailingSelfMoveBalanceOnB(t *testing.T) {
 	_, signedBytesB, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        TestAccountB.GetAddress(),
 		Value:     balanceB.Add(balanceB, big.NewInt(100000)),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasNativeTransfer,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      nil,
 	}, TestAccountB)
 	require.NoError(t, err)
@@ -416,44 +416,42 @@ func TestSendCrossTxBridgeWithOutOfGasOnB(t *testing.T) {
 
 	sessionID := transactions.GenerateRandomSessionID()
 
-	// Chain A: bridge.send (valid)
-	calldataA, err := BridgeABI.Pack("send",
+	// Chain A: bridge.bridgeERC20To (valid)
+	calldataA, err := helpers.PackBridgeERC20To(BridgeABI,
 		TestRollupB.ChainID(),
 		tokenAddress,
-		TestAccountA.GetAddress(),
-		TestAccountB.GetAddress(),
 		transferredAmount,
+		TestAccountB.GetAddress(),
 		sessionID,
-		bridgeAddr,
 	)
 	require.NoError(t, err)
 
 	_, signedBytesA, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        bridgeAddr,
 		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasBridgeERC20To,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataA,
 	}, TestAccountA)
 	require.NoError(t, err)
 
 	// Chain B: bridge.receiveTokens with insufficient gas (should OOG)
-	calldataB, err := BridgeABI.Pack("receiveTokens",
+	calldataB, err := helpers.PackBridgeReceiveTokens(BridgeABI,
 		TestRollupA.ChainID(),
-		TestAccountA.GetAddress(),
+		TestRollupB.ChainID(),
+		bridgeAddr,
 		TestAccountB.GetAddress(),
 		sessionID,
-		bridgeAddr,
 	)
 	require.NoError(t, err)
 
 	_, signedBytesB, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        bridgeAddr,
 		Value:     big.NewInt(0),
-		Gas:       300000, // insufficient gas
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasBridgeReceiveLo, // intentionally too low to exercise the OOG-abort path
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataB,
 	}, TestAccountB)
 	require.NoError(t, err)
@@ -492,29 +490,29 @@ func TestSelfMoveBalanceOnAandreceiveTokensOnB(t *testing.T) {
 	_, signedBytesA, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        TestAccountA.GetAddress(),
 		Value:     big.NewInt(500000000000000000), // 0.5 ETH
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasNativeTransfer,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      nil,
 	}, TestAccountA)
 	require.NoError(t, err)
 
-	// Chain B: receiveTokens without matching send (should fail)
-	calldataB, err := BridgeABI.Pack("receiveTokens",
+	// Chain B: receiveTokens without matching bridgeERC20To (should fail)
+	calldataB, err := helpers.PackBridgeReceiveTokens(BridgeABI,
 		TestRollupA.ChainID(),
-		TestAccountA.GetAddress(),
+		TestRollupB.ChainID(),
+		bridgeAddr,
 		TestAccountB.GetAddress(),
 		sessionID,
-		bridgeAddr,
 	)
 	require.NoError(t, err)
 
 	_, signedBytesB, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        bridgeAddr,
 		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasBridgeReceive,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      calldataB,
 	}, TestAccountB)
 	require.NoError(t, err)

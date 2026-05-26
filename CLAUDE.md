@@ -69,26 +69,23 @@ l2:
       id: 88888        # Chain ID for rollup-b
       rpc-url: http://localhost:27545  # op-rbuilder (builder includes txs in blocks)
   contracts:
-    bridge:
-      address: 0x...   # Bridge contract address (deployed on both rollups)
-      abi: ''          # Bridge contract ABI JSON
-    token:
-      address: 0x...   # Token contract address (deployed on both rollups)
-      abi: ''          # Token contract ABI JSON
-    ping-pong:
-      address: 0x...   # PingPong contract address (deployed on both rollups)
-      abi: ''          # PingPong contract ABI JSON
+    bridge:           # ComposeL2ToL2Bridge
+      address: 0x...
+      abi: ''
+    token:            # MockL2ERC20 (standard ERC-20 + mint/burn)
+      address: 0x...
+      abi: ''
+    mailbox:          # UniversalBridgeMailbox
+      address: 0x...
+      abi: ''
+    cet-factory:      # CetFactory.predictAddress(remoteAsset, remoteChainID)
+      address: 0x...
+      abi: ''
 ```
 
 **Setup steps:**
 1. If `configs/config.yaml` doesn't exist, `make build` will automatically copy it from `configs/config.example.yaml`
-2. Edit `configs/config.yaml` and replace placeholder values with:
-   - Sidecar URL (typically `http://localhost:17090` for local-testnet)
-   - Private keys for funded accounts (one per rollup)
-   - RPC URLs for each rollup
-   - Chain IDs for each rollup
-   - Contract addresses (bridge, token, ping-pong) deployed on both rollups
-   - Contract ABIs as JSON strings
+2. Populate `configs/config.yaml` with sidecar URL, both rollups' keys/ids/RPCs, and the four contract entries (addresses + ABI JSON). Addresses come from `local-testnet/.localnet/networks/<chain>/contracts.json` after the L2 deploy.
 3. Rebuild the binary with `make build` to embed the updated config (for embedded use)
    - OR set `CONFIG_PATH` environment variable to use external config (recommended for Docker/production)
 
@@ -96,7 +93,7 @@ l2:
 - `sidecar-url` is not set
 - Both `rollup-a` and `rollup-b` configs are not present
 - Any field (`pk`, `id`, `rpc-url`) is missing or zero-valued
-- All three contracts (`bridge`, `ping-pong`, `token`) are not present
+- The four contracts (`bridge`, `token`, `mailbox`, `cet-factory`) are not all present
 - Any contract address or ABI is empty
 
 ## Architecture
@@ -169,13 +166,12 @@ dome/
 **test/config.go**:
 - Shared test setup with global variables for rollups, accounts, and sidecar URL
 - Loads config from `configs.Values` global
-- Parses contract ABIs for Bridge, Token, and PingPong contracts
-- `setup()` function initializes rollups, accounts, ABIs, and approves tokens
+- Parses contract ABIs for Bridge, Token, and CetFactory contracts
+- `setup()` mints `setupMintAmount` MockL2ERC20 to each main account and approves the bridge so test bodies start from a predictable token balance
 
 **Test Files**:
 - `bridge_test.go`: Cross-rollup token bridge tests (mint, transfer A->B, B->A, failure scenarios)
 - `smoke_test.go`: TestMain entry point
-- `ping_pong_test.go`: Cross-chain message passing tests
 - `stress_test.go`: Load and stress testing (same account, different accounts, bidirectional, mixed)
 - `uncorrelated_tx_test.go`: Independent transaction failure tests
 
@@ -184,7 +180,15 @@ dome/
 ### Transaction Types
 - All transactions use EIP-1559 dynamic fee structure (`DynamicFeeTx`)
 - Nonces are managed via `PendingNonceAt()` to handle concurrent transactions
-- Gas parameters (GasTipCap, GasFeeCap, Gas) must be specified for each transaction
+- Gas parameters (GasTipCap, GasFeeCap, Gas) come from `internal/helpers/gas.go` constants per call type (mint / approve / bridgeERC20To / receiveTokens / native)
+
+### Wrapped-CET on the destination chain
+
+`ComposeL2ToL2Bridge.receiveTokens` mints a deterministic wrapper-CET (predicted by
+`CetFactory.predictAddress(sourceToken, sourceChainID)`) instead of the destination's
+original ERC-20. Destination-side balance assertions therefore must look up the CET
+address via `helpers.PredictCetAddress` and read balanceOf at that address. The source
+ERC-20 stays escrowed in the bridge.
 
 ### XT Submission Format
 Cross-rollup transactions use the sidecar's JSON HTTP API:

@@ -8,7 +8,7 @@ l2:
       pk: 0000000000000000000000000000000000000000000000000000000000000000
       # Chain ID
       id: 77777
-      # JSON-RPC (op-rbuilder, not op-geth — builder includes txs in blocks)
+      # JSON-RPC (op-rbuilder, not op-geth - builder includes txs in blocks)
       rpc-url: http://localhost:17545
 
     rollup-b:
@@ -16,17 +16,22 @@ l2:
       pk: 0000000000000000000000000000000000000000000000000000000000000000
       # Chain ID
       id: 88888
-      # JSON-RPC (op-rbuilder, not op-geth — builder includes txs in blocks)
+      # JSON-RPC (op-rbuilder, not op-geth - builder includes txs in blocks)
       rpc-url: http://localhost:27545
 
-  # Smart contracts deployed to both rollups
+  # Smart contracts deployed to both rollups. All four entries are required;
+  # addresses are emitted by the local-testnet deployer into
+  # local-testnet/.localnet/networks/<chain>/contracts.json.
   contracts:
-    bridge:
+    bridge:           # ComposeL2ToL2Bridge
       address: 0x
       abi: ''
-    ping-pong:
+    token:            # MockL2ERC20
       address: 0x
       abi: ''
-    token:
+    mailbox:          # UniversalBridgeMailbox
+      address: 0x
+      abi: ''
+    cet-factory:      # CetFactory (predictAddress for wrapped-CET balance reads)
       address: 0x
       abi: ''

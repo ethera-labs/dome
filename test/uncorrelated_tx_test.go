@@ -29,9 +29,9 @@ func TestTxASuccessAndTxBFailure(t *testing.T) {
 	_, signedBytesA, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        TestAccountA.GetAddress(),
 		Value:     new(big.Int).Div(new(big.Int).Set(balanceA), big.NewInt(2)),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasNativeTransfer,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      nil,
 	}, TestAccountA)
 	require.NoError(t, err)
@@ -40,9 +40,9 @@ func TestTxASuccessAndTxBFailure(t *testing.T) {
 	_, signedBytesB, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 		To:        TestAccountB.GetAddress(),
 		Value:     new(big.Int).Add(new(big.Int).Set(balanceB), big.NewInt(1000000000000000000)),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       helpers.GasNativeTransfer,
+		GasTipCap: helpers.GasTipCap,
+		GasFeeCap: helpers.GasFeeCap,
 		Data:      nil,
 	}, TestAccountB)
 	require.NoError(t, err)

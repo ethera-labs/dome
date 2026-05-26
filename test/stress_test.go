@@ -47,7 +47,9 @@ func TestStressBridgeSameAccount(t *testing.T) {
 
 	initialBalanceA, err := TestAccountA.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	initialBalanceB, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
+	cetOnB, err := helpers.PredictCetAddress(ctx, TestRollupB, CetFactoryABI, tokenAddress, TestRollupA.ChainID())
+	require.NoError(t, err)
+	initialCetB, err := TestAccountB.GetTokensBalance(ctx, cetOnB, TokenABI)
 	require.NoError(t, err)
 
 	var txsA []*types.Transaction
@@ -79,14 +81,12 @@ func TestStressBridgeSameAccount(t *testing.T) {
 
 	balanceAAfter, err := TestAccountA.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	balanceBAfter, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
+	cetBAfter, err := TestAccountB.GetTokensBalance(ctx, cetOnB, TokenABI)
 	require.NoError(t, err)
 
-	expectedSentAmount := new(big.Int).Mul(transferredAmount, big.NewInt(numOfTxs))
-	expectedBalanceA := new(big.Int).Sub(initialBalanceA, expectedSentAmount)
-	expectedBalanceB := new(big.Int).Add(initialBalanceB, expectedSentAmount)
-	require.Equal(t, expectedBalanceA, balanceAAfter)
-	require.Equal(t, expectedBalanceB, balanceBAfter)
+	totalSent := new(big.Int).Mul(transferredAmount, big.NewInt(numOfTxs))
+	require.Equal(t, new(big.Int).Sub(initialBalanceA, totalSent), balanceAAfter)
+	require.Equal(t, new(big.Int).Add(initialCetB, totalSent), cetBAfter)
 }
 
 // TestStressBridgeDifferentAccounts spawns numOfAccounts accounts and sends 1 bridge XT from each.
@@ -166,13 +166,15 @@ func TestStressBridgeDifferentAccounts(t *testing.T) {
 		require.Equal(t, types.ReceiptStatusSuccessful, receipt.Status, "tx %s", tx.Hash().Hex())
 	}
 
+	cetOnB, err := helpers.PredictCetAddress(ctx, TestRollupB, CetFactoryABI, tokenAddress, TestRollupA.ChainID())
+	require.NoError(t, err)
 	for _, acc := range accountsOnRollupA {
 		balance, err := acc.GetTokensBalance(ctx, tokenAddress, TokenABI)
 		require.NoError(t, err)
 		require.Equal(t, 0, balance.Cmp(big.NewInt(0)))
 	}
 	for _, acc := range accountsOnRollupB {
-		balance, err := acc.GetTokensBalance(ctx, tokenAddress, TokenABI)
+		balance, err := acc.GetTokensBalance(ctx, cetOnB, TokenABI)
 		require.NoError(t, err)
 		require.Equal(t, 0, balance.Cmp(mintedAndTransferredAmount))
 	}
@@ -258,13 +260,15 @@ func TestStressMultipleAccountsAndMultipleTxs(t *testing.T) {
 		require.Equal(t, types.ReceiptStatusSuccessful, receipt.Status, "tx %s", tx.Hash().Hex())
 	}
 
+	cetOnB, err := helpers.PredictCetAddress(ctx, TestRollupB, CetFactoryABI, tokenAddress, TestRollupA.ChainID())
+	require.NoError(t, err)
 	for _, acc := range accountsOnRollupA {
 		balance, err := acc.GetTokensBalance(ctx, tokenAddress, TokenABI)
 		require.NoError(t, err)
 		require.Equal(t, 0, balance.Cmp(big.NewInt(0)))
 	}
 	for _, acc := range accountsOnRollupB {
-		balance, err := acc.GetTokensBalance(ctx, tokenAddress, TokenABI)
+		balance, err := acc.GetTokensBalance(ctx, cetOnB, TokenABI)
 		require.NoError(t, err)
 		expected := new(big.Int).Mul(transferredAmount, big.NewInt(numOfTxsForMultipleAccounts))
 		require.Equal(t, 0, balance.Cmp(expected))
@@ -286,6 +290,17 @@ func TestStressAtoBAndBtoA(t *testing.T) {
 	initialBalanceA, err := TestAccountA.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
 	initialBalanceB, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
+	require.NoError(t, err)
+	// Round-trip uses two distinct CETs: A→B mints CET(tokenA, chainA) on B;
+	// B→A mints CET(tokenB, chainB) on A. Source tokens stay escrowed on the
+	// originating chain, they do NOT return.
+	cetOnA, err := helpers.PredictCetAddress(ctx, TestRollupA, CetFactoryABI, tokenAddress, TestRollupB.ChainID())
+	require.NoError(t, err)
+	cetOnB, err := helpers.PredictCetAddress(ctx, TestRollupB, CetFactoryABI, tokenAddress, TestRollupA.ChainID())
+	require.NoError(t, err)
+	initialCetA, err := TestAccountA.GetTokensBalance(ctx, cetOnA, TokenABI)
+	require.NoError(t, err)
+	initialCetB, err := TestAccountB.GetTokensBalance(ctx, cetOnB, TokenABI)
 	require.NoError(t, err)
 
 	nonceA, err := TestAccountA.GetNonce(ctx)
@@ -345,8 +360,15 @@ func TestStressAtoBAndBtoA(t *testing.T) {
 	require.NoError(t, err)
 	balanceBAfter, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	require.Equal(t, initialBalanceA, balanceAAfter)
-	require.Equal(t, initialBalanceB, balanceBAfter)
+	cetAAfter, err := TestAccountA.GetTokensBalance(ctx, cetOnA, TokenABI)
+	require.NoError(t, err)
+	cetBAfter, err := TestAccountB.GetTokensBalance(ctx, cetOnB, TokenABI)
+	require.NoError(t, err)
+	totalSent := new(big.Int).Mul(mintedAndTransferredAmount, big.NewInt(int64(totalNumOfTxs)))
+	require.Equal(t, new(big.Int).Sub(initialBalanceA, totalSent), balanceAAfter)
+	require.Equal(t, new(big.Int).Sub(initialBalanceB, totalSent), balanceBAfter)
+	require.Equal(t, new(big.Int).Add(initialCetA, totalSent), cetAAfter)
+	require.Equal(t, new(big.Int).Add(initialCetB, totalSent), cetBAfter)
 }
 
 // TestStressNormalTxsMixWithCrossRollupTxs submits numMixedTxs interleaved pairs of a
@@ -368,7 +390,9 @@ func TestStressNormalTxsMixWithCrossRollupTxs(t *testing.T) {
 
 	initialBalanceA, err := TestAccountA.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	initialBalanceB, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
+	cetOnB, err := helpers.PredictCetAddress(ctx, TestRollupB, CetFactoryABI, tokenAddress, TestRollupA.ChainID())
+	require.NoError(t, err)
+	initialCetB, err := TestAccountB.GetTokensBalance(ctx, cetOnB, TokenABI)
 	require.NoError(t, err)
 
 	var xtInstanceIDs []string
@@ -379,42 +403,40 @@ func TestStressNormalTxsMixWithCrossRollupTxs(t *testing.T) {
 	for i := 0; i < numMixedTxs; i++ {
 		sessionID := transactions.GenerateRandomSessionID()
 
-		calldataA, err := BridgeABI.Pack("send",
+		calldataA, err := helpers.PackBridgeERC20To(BridgeABI,
 			TestRollupB.ChainID(),
 			tokenAddress,
-			TestAccountA.GetAddress(),
-			TestAccountB.GetAddress(),
 			transferredAmount,
+			TestAccountB.GetAddress(),
 			sessionID,
-			bridgeAddr,
 		)
 		require.NoError(t, err)
 
 		xtTxA, signedBytesA, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 			To:        bridgeAddr,
 			Value:     big.NewInt(0),
-			Gas:       900000,
-			GasTipCap: big.NewInt(1000000000),
-			GasFeeCap: big.NewInt(20000000000),
+			Gas:       helpers.GasBridgeERC20To,
+			GasTipCap: helpers.GasTipCap,
+			GasFeeCap: helpers.GasFeeCap,
 			Data:      calldataA,
 		}, TestAccountA)
 		require.NoError(t, err)
 
-		calldataB, err := BridgeABI.Pack("receiveTokens",
+		calldataB, err := helpers.PackBridgeReceiveTokens(BridgeABI,
 			TestRollupA.ChainID(),
-			TestAccountB.GetAddress(),
+			TestRollupB.ChainID(),
+			bridgeAddr,
 			TestAccountB.GetAddress(),
 			sessionID,
-			bridgeAddr,
 		)
 		require.NoError(t, err)
 
 		xtTxB, signedBytesB, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 			To:        bridgeAddr,
 			Value:     big.NewInt(0),
-			Gas:       900000,
-			GasTipCap: big.NewInt(1000000000),
-			GasFeeCap: big.NewInt(20000000000),
+			Gas:       helpers.GasBridgeReceive,
+			GasTipCap: helpers.GasTipCap,
+			GasFeeCap: helpers.GasFeeCap,
 			Data:      calldataB,
 		}, TestAccountB)
 		require.NoError(t, err)
@@ -432,9 +454,9 @@ func TestStressNormalTxsMixWithCrossRollupTxs(t *testing.T) {
 		selfTx, _, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
 			To:        TestAccountA.GetAddress(),
 			Value:     big.NewInt(100000000000000000),
-			Gas:       25000,
-			GasTipCap: big.NewInt(1000000000),
-			GasFeeCap: big.NewInt(20000000000),
+			Gas:       helpers.GasNativeTransfer,
+			GasTipCap: helpers.GasTipCap,
+			GasFeeCap: helpers.GasFeeCap,
 		}, TestAccountA)
 		require.NoError(t, err)
 		require.Greater(t, selfTx.Nonce(), xtTxA.Nonce())
@@ -471,9 +493,9 @@ func TestStressNormalTxsMixWithCrossRollupTxs(t *testing.T) {
 
 	balanceAAfter, err := TestAccountA.GetTokensBalance(ctx, tokenAddress, TokenABI)
 	require.NoError(t, err)
-	balanceBAfter, err := TestAccountB.GetTokensBalance(ctx, tokenAddress, TokenABI)
+	cetBAfter, err := TestAccountB.GetTokensBalance(ctx, cetOnB, TokenABI)
 	require.NoError(t, err)
 	expectedSent := new(big.Int).Mul(transferredAmount, big.NewInt(numMixedTxs))
 	require.Equal(t, new(big.Int).Sub(initialBalanceA, expectedSent), balanceAAfter)
-	require.Equal(t, new(big.Int).Add(initialBalanceB, expectedSent), balanceBAfter)
+	require.Equal(t, new(big.Int).Add(initialCetB, expectedSent), cetBAfter)
 }

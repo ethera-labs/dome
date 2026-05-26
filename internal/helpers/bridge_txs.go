@@ -7,145 +7,186 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethera-labs/dome/internal/logger"
 	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ethera-labs/dome/configs"
 	"github.com/ethera-labs/dome/internal/accounts"
+	"github.com/ethera-labs/dome/internal/logger"
 	"github.com/ethera-labs/dome/internal/transactions"
 )
 
-const defaultDecisionTimeout = 60 * time.Second
+const (
+	defaultDecisionTimeout = 60 * time.Second
+	// LabelSendTokens matches the on-chain label the source bridge writes into
+	// the UniversalBridgeMailbox; the destination side must read with the same
+	// label.
+	LabelSendTokens = "SEND_TOKENS"
+)
 
-// SendBridgeTx sends a bridge transaction from ac1 to ac2 via the sidecar.
-// Returns the signed transactions for both chains (for receipt checking).
+// MessageHeader mirrors UniversalBridgeMailbox.MessageHeader. Field order and
+// types must match the on-chain tuple so abi.Pack encodes the components in
+// the right slots.
+type MessageHeader struct {
+	ChainSrc  *big.Int       `abi:"chainSrc"`
+	ChainDest *big.Int       `abi:"chainDest"`
+	Sender    common.Address `abi:"sender"`
+	Receiver  common.Address `abi:"receiver"`
+	SessionId *big.Int       `abi:"sessionId"`
+	Label     string         `abi:"label"`
+}
+
+// PackBridgeERC20To encodes a call to ComposeL2ToL2Bridge.bridgeERC20To.
+func PackBridgeERC20To(
+	bridgeABI abi.ABI,
+	chainDest *big.Int,
+	tokenSrc common.Address,
+	amount *big.Int,
+	receiver common.Address,
+	sessionID *big.Int,
+) ([]byte, error) {
+	return bridgeABI.Pack("bridgeERC20To", chainDest, tokenSrc, amount, receiver, sessionID)
+}
+
+// PackBridgeReceiveTokens encodes a call to ComposeL2ToL2Bridge.receiveTokens.
+// `sourceBridge` is the source-chain bridge contract address; the mailbox keys
+// messages by (chainSrc, chainDest, sender, receiver, sessionId, label) where
+// `sender` is the *source bridge* address (= msg.sender of writeMessage), not
+// the end user.
+func PackBridgeReceiveTokens(
+	bridgeABI abi.ABI,
+	chainSrc *big.Int,
+	chainDest *big.Int,
+	sourceBridge common.Address,
+	receiver common.Address,
+	sessionID *big.Int,
+) ([]byte, error) {
+	return bridgeABI.Pack("receiveTokens", MessageHeader{
+		ChainSrc:  chainSrc,
+		ChainDest: chainDest,
+		Sender:    sourceBridge,
+		Receiver:  receiver,
+		SessionId: sessionID,
+		Label:     LabelSendTokens,
+	})
+}
+
+// signedBridgePair builds and signs the source-side `bridgeERC20To` tx on
+// `from`'s chain and the destination-side `receiveTokens` tx on `to`'s chain.
+// If `fromNonce`/`toNonce` are nil the auto-nonce path is used.
+func signedBridgePair(
+	ctx context.Context,
+	from, to *accounts.Account,
+	fromNonce, toNonce *uint64,
+	amount *big.Int,
+	bridgeABI abi.ABI,
+) (*types.Transaction, []byte, *types.Transaction, []byte, error) {
+	bridgeAddr := configs.Values.L2.Contracts[configs.ContractNameBridge].Address
+	tokenAddr := configs.Values.L2.Contracts[configs.ContractNameToken].Address
+	sessionID := transactions.GenerateRandomSessionID()
+
+	srcCalldata, err := PackBridgeERC20To(
+		bridgeABI,
+		to.GetRollup().ChainID(),
+		tokenAddr,
+		amount,
+		to.GetAddress(),
+		sessionID,
+	)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("pack bridgeERC20To: %w", err)
+	}
+
+	srcTx, srcBytes, err := createBridgeTx(ctx, bridgeAddr, srcCalldata, GasBridgeERC20To, from, fromNonce)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("sign source tx: %w", err)
+	}
+
+	dstCalldata, err := PackBridgeReceiveTokens(
+		bridgeABI,
+		from.GetRollup().ChainID(),
+		to.GetRollup().ChainID(),
+		bridgeAddr,
+		to.GetAddress(),
+		sessionID,
+	)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("pack receiveTokens: %w", err)
+	}
+
+	dstTx, dstBytes, err := createBridgeTx(ctx, bridgeAddr, dstCalldata, GasBridgeReceive, to, toNonce)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("sign destination tx: %w", err)
+	}
+
+	return srcTx, srcBytes, dstTx, dstBytes, nil
+}
+
+func createBridgeTx(
+	ctx context.Context,
+	to common.Address,
+	calldata []byte,
+	gas uint64,
+	ac *accounts.Account,
+	nonce *uint64,
+) (*types.Transaction, []byte, error) {
+	details := transactions.TransactionDetails{
+		To:        to,
+		Value:     big.NewInt(0),
+		Gas:       gas,
+		GasTipCap: GasTipCap,
+		GasFeeCap: GasFeeCap,
+		Data:      calldata,
+	}
+	if nonce == nil {
+		return transactions.CreateTransaction(ctx, details, ac)
+	}
+	return transactions.CreateTransactionWithNonce(ctx, details, ac, *nonce)
+}
+
+// SendBridgeTx sends a bridge XT from `from` to `to` via the sidecar and
+// asserts it commits. Returns the source-chain and destination-chain
+// transactions for downstream receipt verification.
 func SendBridgeTx(
 	t *testing.T,
-	ac1 *accounts.Account,
-	ac2 *accounts.Account,
+	from, to *accounts.Account,
 	amount *big.Int,
 	bridgeABI abi.ABI,
 ) (*types.Transaction, *types.Transaction, error) {
-	bridgeAddr := configs.Values.L2.Contracts[configs.ContractNameBridge].Address
-	sessionID := transactions.GenerateRandomSessionID()
-
-	calldataA, err := bridgeABI.Pack("send",
-		ac2.GetRollup().ChainID(),
-		configs.Values.L2.Contracts[configs.ContractNameToken].Address,
-		ac1.GetAddress(),
-		ac2.GetAddress(),
-		amount,
-		sessionID,
-		bridgeAddr,
-	)
-	require.NoError(t, err)
-
-	txA, signedBytesA, err := transactions.CreateTransaction(t.Context(), transactions.TransactionDetails{
-		To:        bridgeAddr,
-		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
-		Data:      calldataA,
-	}, ac1)
-	require.NoError(t, err)
-
-	calldataB, err := bridgeABI.Pack("receiveTokens",
-		ac1.GetRollup().ChainID(),
-		ac2.GetAddress(),
-		ac2.GetAddress(),
-		sessionID,
-		bridgeAddr,
-	)
-	require.NoError(t, err)
-
-	txB, signedBytesB, err := transactions.CreateTransaction(t.Context(), transactions.TransactionDetails{
-		To:        bridgeAddr,
-		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
-		Data:      calldataB,
-	}, ac2)
-	require.NoError(t, err)
-
-	xtTxs := map[string][]string{
-		ac1.GetRollup().ChainID().String(): {hexutil.Encode(signedBytesA)},
-		ac2.GetRollup().ChainID().String(): {hexutil.Encode(signedBytesB)},
-	}
-
-	xtResp, err := transactions.SubmitXT(t.Context(), configs.Values.L2.SidecarURL, xtTxs)
-	require.NoError(t, err)
-
-	committed, err := transactions.WaitForDecision(t.Context(), configs.Values.L2.SidecarURL, xtResp.InstanceID, defaultDecisionTimeout)
-	require.NoError(t, err)
-	require.True(t, committed, "bridge XT should be committed")
-
-	logger.Info("Bridge XT committed: %s (txA: %s, txB: %s)", xtResp.InstanceID, txA.Hash(), txB.Hash())
-	return txA, txB, nil
+	return sendBridgeTx(t, from, to, nil, nil, amount, bridgeABI)
 }
 
-// SendBridgeTxWithNonce sends a bridge transaction with explicit nonces via the sidecar.
+// SendBridgeTxWithNonce is `SendBridgeTx` with explicit nonces, used by stress
+// tests that pre-compute nonce ranges to avoid the pending-pool race.
 func SendBridgeTxWithNonce(
 	t *testing.T,
-	ac1 *accounts.Account,
-	ac1Nonce uint64,
-	ac2 *accounts.Account,
-	ac2Nonce uint64,
+	from *accounts.Account,
+	fromNonce uint64,
+	to *accounts.Account,
+	toNonce uint64,
 	amount *big.Int,
 	bridgeABI abi.ABI,
 ) (*types.Transaction, *types.Transaction, error) {
-	bridgeAddr := configs.Values.L2.Contracts[configs.ContractNameBridge].Address
-	sessionID := transactions.GenerateRandomSessionID()
+	return sendBridgeTx(t, from, to, &fromNonce, &toNonce, amount, bridgeABI)
+}
 
-	calldataA, err := bridgeABI.Pack("send",
-		ac2.GetRollup().ChainID(),
-		configs.Values.L2.Contracts[configs.ContractNameToken].Address,
-		ac1.GetAddress(),
-		ac2.GetAddress(),
-		amount,
-		sessionID,
-		bridgeAddr,
-	)
-	require.NoError(t, err)
-
-	txA, signedBytesA, err := transactions.CreateTransactionWithNonce(t.Context(), transactions.TransactionDetails{
-		To:        bridgeAddr,
-		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
-		Data:      calldataA,
-	}, ac1, ac1Nonce)
-	require.NoError(t, err)
-
-	calldataB, err := bridgeABI.Pack("receiveTokens",
-		ac1.GetRollup().ChainID(),
-		ac2.GetAddress(),
-		ac2.GetAddress(),
-		sessionID,
-		bridgeAddr,
-	)
-	require.NoError(t, err)
-
-	txB, signedBytesB, err := transactions.CreateTransactionWithNonce(t.Context(), transactions.TransactionDetails{
-		To:        bridgeAddr,
-		Value:     big.NewInt(0),
-		Gas:       900000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
-		Data:      calldataB,
-	}, ac2, ac2Nonce)
+func sendBridgeTx(
+	t *testing.T,
+	from, to *accounts.Account,
+	fromNonce, toNonce *uint64,
+	amount *big.Int,
+	bridgeABI abi.ABI,
+) (*types.Transaction, *types.Transaction, error) {
+	srcTx, srcBytes, dstTx, dstBytes, err := signedBridgePair(t.Context(), from, to, fromNonce, toNonce, amount, bridgeABI)
 	require.NoError(t, err)
 
 	xtTxs := map[string][]string{
-		ac1.GetRollup().ChainID().String(): {hexutil.Encode(signedBytesA)},
-		ac2.GetRollup().ChainID().String(): {hexutil.Encode(signedBytesB)},
+		from.GetRollup().ChainID().String(): {hexutil.Encode(srcBytes)},
+		to.GetRollup().ChainID().String():   {hexutil.Encode(dstBytes)},
 	}
-
 	xtResp, err := transactions.SubmitXT(t.Context(), configs.Values.L2.SidecarURL, xtTxs)
 	require.NoError(t, err)
 
@@ -153,22 +194,20 @@ func SendBridgeTxWithNonce(
 	require.NoError(t, err)
 	require.True(t, committed, "bridge XT should be committed")
 
-	logger.Info("Bridge XT committed: %s (txA: %s, txB: %s)", xtResp.InstanceID, txA.Hash(), txB.Hash())
-	return txA, txB, nil
+	logger.Info("Bridge XT committed: %s (src: %s, dst: %s)", xtResp.InstanceID, srcTx.Hash(), dstTx.Hash())
+	return srcTx, dstTx, nil
 }
 
-// SubmitXTAndWait is a generic helper that submits an XT and waits for its decision.
-// Returns (instanceID, committed, error).
+// SubmitXTAndWait submits raw signed transactions as an XT and waits for the
+// sidecar's commit/abort decision.
 func SubmitXTAndWait(ctx context.Context, xtTxs map[string][]string, timeout time.Duration) (string, bool, error) {
 	xtResp, err := transactions.SubmitXT(ctx, configs.Values.L2.SidecarURL, xtTxs)
 	if err != nil {
-		return "", false, fmt.Errorf("failed to submit XT: %w", err)
+		return "", false, fmt.Errorf("submit XT: %w", err)
 	}
-
 	committed, err := transactions.WaitForDecision(ctx, configs.Values.L2.SidecarURL, xtResp.InstanceID, timeout)
 	if err != nil {
-		return xtResp.InstanceID, false, fmt.Errorf("failed waiting for decision: %w", err)
+		return xtResp.InstanceID, false, fmt.Errorf("wait for decision: %w", err)
 	}
-
 	return xtResp.InstanceID, committed, nil
 }
