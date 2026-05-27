@@ -18,9 +18,9 @@ func SendSelfMoveBalanceTxWithNonce(
 	txDetails := transactions.TransactionDetails{
 		To:        ac.GetAddress(),
 		Value:     amount,
-		Gas:       25000,
-		GasTipCap: big.NewInt(1000000000),
-		GasFeeCap: big.NewInt(20000000000),
+		Gas:       GasNativeTransfer,
+		GasTipCap: GasTipCap,
+		GasFeeCap: GasFeeCap,
 		Data:      nil,
 	}
 

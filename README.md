@@ -1,6 +1,7 @@
 # Dome
 
-A Go-based E2E test framework for cross-rollup blockchain transactions. Tests cross-chain transaction (XT) functionality between multiple rollup networks using the Compose Sidecar's HTTP API for atomic cross-chain coordination.
+A Go-based E2E test framework for cross-rollup blockchain transactions. Tests cross-chain transaction (XT) functionality
+between multiple rollup networks using the Compose Sidecar's HTTP API for atomic cross-chain coordination.
 
 ## Features
 
@@ -25,6 +26,7 @@ make build
 ```
 
 This will:
+
 - Create `bin/dome` test binary
 - Auto-generate `configs/config.yaml` from `configs/config.example.yaml` if it doesn't exist
 - Embed the config into the binary
@@ -49,18 +51,22 @@ l2:
       rpc-url: http://localhost:28545
 
   contracts:
-    bridge:
+    bridge: # ComposeL2ToL2Bridge (bridgeERC20To + receiveTokens)
       address: 0x...
       abi: '[...]'
-    ping-pong:
+    token: # MockL2ERC20 (standard ERC-20 surface + mint/burn)
       address: 0x...
       abi: '[...]'
-    token:
+    mailbox: # UniversalBridgeMailbox (write/readMessage; sourced for diagnostics)
+      address: 0x...
+      abi: '[...]'
+    cet-factory: # CetFactory.predictAddress(...) - wrapped CET lookup on the destination side
       address: 0x...
       abi: '[...]'
 ```
 
 After editing config, rebuild to embed changes:
+
 ```bash
 make build
 ```
@@ -86,6 +92,7 @@ make stress-test   # Stress tests
 ```
 
 Run the binary directly:
+
 ```bash
 # Use embedded config
 ./bin/dome -test.v -test.run=TestSendCrossTxBridge
@@ -127,13 +134,35 @@ dome/
 3. **Wait for Decision**: Poll `GET /xt/:id` until the sidecar returns committed or aborted
 4. **Verify**: If committed, check transaction receipts on each chain's RPC
 
+### Wrapped-CET Token Semantics
+
+`ComposeL2ToL2Bridge.receiveTokens` mints a **deterministic wrapped-CET** on the destination
+chain (predicted from `(sourceToken, sourceChainID)` via `CetFactory.predictAddress`) rather than
+crediting the destination's original ERC-20. Destination-side balance assertions therefore
+read the CET balance via `helpers.PredictCetAddress`, not the source token. The source-side
+ERC-20 is locked in the bridge contract for the lifetime of the bridged supply.
+
+### Gas Budgets
+
+Per-call defaults live in `internal/helpers/gas.go`, sized against measured worst-case
+plus margin for mailbox-root recomputation under bursty load:
+
+| Constant             | Value     | Used for                                    |
+|----------------------|-----------|---------------------------------------------|
+| `GasMint`            | 200,000   | `MockL2ERC20.mint`                          |
+| `GasApprove`         | 200,000   | `MockL2ERC20.approve`                       |
+| `GasNativeTransfer`  | 50,000    | EOA self-/cross-transfer                    |
+| `GasBridgeERC20To`   | 800,000   | source-side `bridgeERC20To`                 |
+| `GasBridgeReceive`   | 1,500,000 | destination-side `receiveTokens`            |
+| `GasBridgeReceiveLo` | 200,000   | intentionally-OOG receive (abort scenarios) |
+
 ### Sidecar API
 
-| Endpoint    | Method | Purpose                            |
-|-------------|--------|------------------------------------|
-| `/xt`       | POST   | Submit cross-chain transaction     |
-| `/xt/:id`   | GET    | Poll XT status (committed/aborted) |
-| `/health`   | GET    | Sidecar liveness check             |
+| Endpoint  | Method | Purpose                            |
+|-----------|--------|------------------------------------|
+| `/xt`     | POST   | Submit cross-chain transaction     |
+| `/xt/:id` | GET    | Poll XT status (committed/aborted) |
+| `/health` | GET    | Sidecar liveness check             |
 
 ### Configuration
 
@@ -141,9 +170,11 @@ Configuration supports both embedded and external loading for maximum flexibilit
 
 **Embedded Config (Default)**: Uses Go's `//go:embed` directive to embed `configs/config.yaml` at compile time.
 
-**External Config (Recommended for Production)**: Set `CONFIG_PATH` environment variable to load config from external file.
+**External Config (Recommended for Production)**: Set `CONFIG_PATH` environment variable to load config from external
+file.
 
 **Loading Priority**:
+
 1. Check `CONFIG_PATH` environment variable
 2. If set, try to load from that path
 3. If not set, use embedded config

@@ -3,14 +3,14 @@
 # Container names are hardcoded to match the local-testnet docker-compose setup.
 #
 # Usage: ./scripts/test-with-localnet-logs.sh [TEST_NAME] [TIMEOUT]
-#   TEST_NAME  — test name filter (default: all tests)
-#   TIMEOUT    — test timeout (default: 300s)
+#   TEST_NAME  - test name filter (default: all tests)
+#   TIMEOUT    - test timeout (default: 300s)
 #
 # Environment variables:
-#   LOGS_DIR    — directory for log files (default: logs)
-#   LOG_LEVEL   — log level passed to the binary (default: INFO)
-#   CONFIG_PATH — external config file path (optional)
-#   CONTAINERS  — space-separated list of Docker container names to capture logs from
+#   LOGS_DIR    - directory for log files (default: logs)
+#   LOG_LEVEL   - log level passed to the binary (default: INFO)
+#   CONFIG_PATH - external config file path (optional)
+#   CONTAINERS  - space-separated list of Docker container names to capture logs from
 #                 (default: local-testnet containers)
 #
 # Logs are saved to $LOGS_DIR/<container>.log
@@ -31,8 +31,8 @@ DEFAULT_CONTAINERS=(
   op-rbuilder-b
   rollup-boost-a
   rollup-boost-b
-  op-geth-a
-  op-geth-b
+  op-reth-a
+  op-reth-b
   op-node-a
   op-node-b
 )
