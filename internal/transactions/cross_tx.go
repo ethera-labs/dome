@@ -7,15 +7,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/ethera-labs/dome/internal/logger"
 )
 
 const (
-	xtPollInterval    = 100 * time.Millisecond
-	xtStatusCommitted = "committed"
-	xtStatusAborted   = "aborted"
+	xtPollInterval                 = 100 * time.Millisecond
+	xtStatusCommitted              = "committed"
+	xtStatusAborted                = "aborted"
+	sidecarEndpointEnv             = "SIDECAR_XT_ENDPOINT"
+	staleStandaloneInstanceError   = "already exists with different transactions"
+	defaultXTSubmitRetryDelay      = 500 * time.Millisecond
+	defaultXTSubmitRetryMaxAttempt = 20
 )
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
@@ -41,44 +47,65 @@ type XTStatus struct {
 // SubmitXT posts a cross-chain transaction to the sidecar's /xt endpoint.
 // transactions maps chain ID (as string) to a list of 0x-prefixed raw transaction hex strings.
 func SubmitXT(ctx context.Context, sidecarURL string, transactions map[string][]string) (*XTResponse, error) {
+	sidecarBaseURL := resolveSidecarBaseURL(sidecarURL)
+
 	body, err := json.Marshal(XTSubmitRequest{Transactions: transactions})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal XT request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sidecarURL+"/xt", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 1; attempt <= defaultXTSubmitRetryMaxAttempt; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, sidecarBaseURL+"/xt", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to submit XT: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to submit XT: %w", err)
+		} else {
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				return nil, fmt.Errorf("failed to read response: %w", readErr)
+			}
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+				var xtResp XTResponse
+				if err := json.Unmarshal(respBody, &xtResp); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal XT response: %w", err)
+				}
+
+				logger.Info("XT submitted successfully, instance_id: %s", xtResp.InstanceID)
+				return &xtResp, nil
+			}
+
+			lastErr = fmt.Errorf("sidecar returned %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		if !isRetryableStaleInstanceError(lastErr) || attempt == defaultXTSubmitRetryMaxAttempt {
+			return nil, lastErr
+		}
+
+		logger.Info(
+			"Retrying XT submission after stale standalone instance collision (attempt %d/%d): %v",
+			attempt,
+			defaultXTSubmitRetryMaxAttempt,
+			lastErr,
+		)
+		time.Sleep(defaultXTSubmitRetryDelay)
 	}
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("sidecar returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var xtResp XTResponse
-	if err := json.Unmarshal(respBody, &xtResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal XT response: %w", err)
-	}
-
-	logger.Info("XT submitted successfully, instance_id: %s", xtResp.InstanceID)
-	return &xtResp, nil
+	return nil, lastErr
 }
 
 // GetXTStatus retrieves the status of a previously submitted XT.
 func GetXTStatus(ctx context.Context, sidecarURL string, instanceID string) (*XTStatus, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sidecarURL+"/xt/"+instanceID, nil)
+	sidecarBaseURL := resolveSidecarBaseURL(sidecarURL)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sidecarBaseURL+"/xt/"+instanceID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -132,4 +159,23 @@ func WaitForDecision(ctx context.Context, sidecarURL string, instanceID string, 
 	}
 
 	return false, fmt.Errorf("timeout waiting for XT decision after %s", timeout)
+}
+
+func resolveSidecarBaseURL(fallback string) string {
+	if endpoint := strings.TrimSpace(os.Getenv(sidecarEndpointEnv)); endpoint != "" {
+		return normalizeSidecarBaseURL(endpoint)
+	}
+	return normalizeSidecarBaseURL(fallback)
+}
+
+func normalizeSidecarBaseURL(url string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(url), "/")
+	return strings.TrimSuffix(trimmed, "/xt")
+}
+
+func isRetryableStaleInstanceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), staleStandaloneInstanceError)
 }
