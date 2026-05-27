@@ -3,12 +3,12 @@ l2:
 
   chain-configs:
     rollup-a:
-      pk: 0x336ff3f15e4a2356201939cbc486d8589585e3e67fb4664ba1912ad21ac1153a
+      pk: 0000000000000000000000000000000000000000000000000000000000000000
       id: 177778
       rpc-url: https://op-rbuilder-a.stage.ethera-labs.io
 
     rollup-b:
-      pk: 0x336ff3f15e4a2356201939cbc486d8589585e3e67fb4664ba1912ad21ac1153a
+      pk: 0000000000000000000000000000000000000000000000000000000000000000
       id: 188889
       rpc-url: https://op-rbuilder-b.stage.ethera-labs.io
 
