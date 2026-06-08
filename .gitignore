@@ -187,3 +187,17 @@ coverage/
 # Configuration file
 **/config.yaml
 **/config_*
+
+# Per-test state files (created/consumed by two-phase tests)
+test/.l1-to-l2-*-state-*.json
+test/.l2-to-l2-*-state-*.json
+test/.l2-to-l1-*-state-*.json
+# Legacy filename pattern from the TS scripts (no .json suffix)
+test/.l1-to-l2-*-state-*
+test/.l2-to-l2-*-state-*
+test/.l2-to-l1-*-state-*
+
+# scripts/ Node deps and build output
+scripts/node_modules/
+scripts/dist/
+scripts/package-lock.json

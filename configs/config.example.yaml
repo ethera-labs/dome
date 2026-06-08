@@ -1,37 +1,67 @@
+# Active network. One of: local | hoodi | sepolia-prod | sepolia-stage.
+# Other than `local`, ready-to-use templates ship as config.<network>.yaml.
+network: local
+
+# Cross-chain transaction submission mode.
+#   sidecar — POST to l2.sidecar-url (local-testnet, sepolia-stage)
+#   rpc     — eth_sendXTransaction on the source rollup RPC (hoodi, sepolia-prod);
+#             requires `node` + scripts/encode-xt.ts for payload encoding.
+xt-submission: sidecar
+
+# Single EOA private key (with or without 0x prefix) used across L1, L2-A, L2-B.
+# Back-compat: if empty, falls back to l2.chain-configs.rollup-a.pk.
+wallet-private-key: 0000000000000000000000000000000000000000000000000000000000000000
+
+# L1 section. Optional — absent on local-testnet. When absent, all L1->L2 and
+# L2->L1 tests skip with a clear reason.
+# l1:
+#   rpc-url: http://...
+#   chain-id: 560048
+#   contracts:
+#     compose-l1-bridge-rollup-a: { address: 0x..., abi: '[...]' }
+#     compose-l1-bridge-rollup-b: { address: 0x..., abi: '[...]' }
+#     compose-portal-rollup-a:    { address: 0x..., abi: '[...]' }
+#     compose-portal-rollup-b:    { address: 0x..., abi: '[...]' }
+#     dispute-game-factory:       { address: 0x..., abi: '[...]' }
+
 l2:
-  # Sidecar HTTP API URL (XTs are submitted here)
+  # Sidecar HTTP API URL — used when xt-submission=sidecar.
   sidecar-url: http://localhost:17090
 
   chain-configs:
     rollup-a:
-      # Private key (with or without 0x prefix) for a funded account
-      pk: 0000000000000000000000000000000000000000000000000000000000000000
-      # Chain ID
       id: 77777
-      # JSON-RPC (op-rbuilder, not op-geth - builder includes txs in blocks)
       rpc-url: http://localhost:17545
-
+      # bundler-url: only set on sepolia-stage (AA compose endpoint)
     rollup-b:
-      # Private key (with or without 0x prefix) for a funded account
-      pk: 0000000000000000000000000000000000000000000000000000000000000000
-      # Chain ID
       id: 88888
-      # JSON-RPC (op-rbuilder, not op-geth - builder includes txs in blocks)
       rpc-url: http://localhost:27545
 
-  # Smart contracts deployed to both rollups. All four entries are required;
-  # addresses are emitted by the local-testnet deployer into
-  # local-testnet/.localnet/networks/<chain>/contracts.json.
+  # Smart contracts deployed to both rollups.
+  #   bridge, mailbox, cet-factory — required everywhere.
+  #   token                       — required on local only (MockL2ERC20).
+  #   compose-l2-bridge-rollup-a/b — required for L2->L1 tests.
+  #   eth-liquidity               — optional.
   contracts:
     bridge:           # ComposeL2ToL2Bridge
-      address: 0x
+      address: 0x0000000000000000000000000000000000000000
       abi: ''
-    token:            # MockL2ERC20
-      address: 0x
+    token:            # MockL2ERC20 (local-testnet only)
+      address: 0x0000000000000000000000000000000000000000
       abi: ''
     mailbox:          # UniversalBridgeMailbox
-      address: 0x
+      address: 0x0000000000000000000000000000000000000000
       abi: ''
     cet-factory:      # CetFactory (predictAddress for wrapped-CET balance reads)
-      address: 0x
+      address: 0x0000000000000000000000000000000000000000
       abi: ''
+    # compose-l2-bridge-rollup-a: { address: 0x..., abi: '[...]' }
+    # compose-l2-bridge-rollup-b: { address: 0x..., abi: '[...]' }
+    # eth-liquidity:              { address: 0x..., abi: '[...]' }
+
+  # AA section. Optional — absent on local-testnet. When absent, all SA tests
+  # skip with a clear reason.
+  # aa:
+  #   kernel-impl: 0x...
+  #   kernel-factory: 0x...
+  #   multichain-validator: 0x...

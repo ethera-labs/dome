@@ -2,7 +2,7 @@ TEST_BINARY := bin/dome
 DOCKER_IMAGE := dome
 DOCKER_TAG := latest
 
-.PHONY: help build test clean run-example run-simple-example deps ensure-config docker-build
+.PHONY: help build test clean run-example run-simple-example deps ensure-config docker-build scripts-install
 
 # Default target
 help:
@@ -20,6 +20,7 @@ help:
 	@echo "  lint            - Run linter"
 	@echo "  lint-fix        - Run linter and auto-fix issues"
 	@echo "  docker-build    - Build Docker image (usage: make docker-build [DOCKER_TAG=tag])"
+	@echo "  scripts-install - Install Node deps for scripts/ (needed for xt-submission=rpc and SA tests)"
 
 # Ensure config.yaml exists (create from example if needed)
 ensure-config:
@@ -84,6 +85,59 @@ smoke-test: build
 stress-test: build
 	@echo "Running stress tests with INFO log level..."
 	LOG_LEVEL=INFO $(TEST_BINARY) -test.v -test.count=1 -test.run="TestStressBridgeSameAccount|TestStressBridgeDifferentAccounts|TestStressMultipleAccountsAndMultipleTxs|TestStressAtoBAndBtoA|TestStressNormalTxsMixWithCrossRollupTxs"
+
+# Run the test binary against a per-network config (no embedded config needed).
+#
+# Filter selection (one of):
+#   TEST_NAME=<regex>      raw -test.run regex                (e.g. "^TestL2ToL2_ETH_AtoB$")
+#   TEST_FILE=<file>       short filename, expands to the Test* functions defined in it
+#                          (e.g. "l2_to_l2_eth_test" runs everything in test/l2_to_l2_eth_test.go)
+#
+# Direction + amount overrides (consumed by helpers.ApplyDirectionFilter and
+# ParseBridgeAmountOverride inside the tests):
+#   SOURCE=a|b|l1          BRIDGE_SOURCE
+#   DEST=a|b|l1            BRIDGE_DEST
+#   AMOUNT=<eth>           BRIDGE_AMOUNT (decimal ETH, e.g. 0.01)
+#   AMOUNT_WEI=<wei>       BRIDGE_AMOUNT_WEI (raw wei, takes precedence over AMOUNT)
+test-hoodi: build
+	@$(MAKE) _run-tests CONFIG=configs/config.hoodi.yaml
+
+test-sepolia-prod: build
+	@$(MAKE) _run-tests CONFIG=configs/config.sepolia-prod.yaml
+
+test-sepolia-stage: build
+	@$(MAKE) _run-tests CONFIG=configs/config.sepolia-stage.yaml
+
+# Internal helper. Builds the -test.run regex from TEST_NAME or TEST_FILE and
+# forwards SOURCE/DEST/AMOUNT/AMOUNT_WEI as env vars.
+.PHONY: _run-tests
+_run-tests:
+	@if [ -n "$(TEST_FILE)" ]; then \
+		FILE="test/$(TEST_FILE).go"; \
+		if [ ! -f "$$FILE" ]; then echo "no such test file: $$FILE"; exit 1; fi; \
+		TESTS=$$(grep -oE 'func Test[A-Za-z0-9_]+' "$$FILE" | sed 's/^func //' | sort -u | paste -sd'|' -); \
+		if [ -z "$$TESTS" ]; then echo "no Test* functions in $$FILE"; exit 1; fi; \
+		PATTERN="^($$TESTS)$$"; \
+	elif [ -n "$(TEST_NAME)" ]; then \
+		PATTERN="$(TEST_NAME)"; \
+	else \
+		PATTERN=".*"; \
+	fi; \
+	echo "Running tests against $(CONFIG) (pattern: $$PATTERN)"; \
+	CONFIG_PATH=$(CURDIR)/$(CONFIG) LOG_LEVEL=INFO \
+		$(if $(SOURCE),BRIDGE_SOURCE=$(SOURCE)) \
+		$(if $(DEST),BRIDGE_DEST=$(DEST)) \
+		$(if $(AMOUNT),BRIDGE_AMOUNT=$(AMOUNT)) \
+		$(if $(AMOUNT_WEI),BRIDGE_AMOUNT_WEI=$(AMOUNT_WEI)) \
+		$(TEST_BINARY) -test.v -test.count=1 -test.run="$$PATTERN"
+
+# Install Node dependencies for scripts/ — required once before running any
+# test that uses xt-submission=rpc (hoodi, sepolia-prod) or smart-account
+# flows. scripts/encode-xt.ts and scripts/sa-helper.ts shell out to npx
+# ts-node from this directory.
+scripts-install:
+	@echo "Installing Node deps in scripts/..."
+	cd scripts && npm install --legacy-peer-deps
 
 # Download and tidy dependencies
 deps:

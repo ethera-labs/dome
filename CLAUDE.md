@@ -4,205 +4,300 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is a Go-based E2E test framework for blockchain cross-rollup transactions. The project tests cross-chain transaction (XT) functionality between multiple rollup networks using the Compose Sidecar's HTTP API for atomic cross-chain coordination.
+Go-based E2E test framework for the Compose cross-rollup stack. Exercises L2↔L2, L1↔L2, and L2→L1
+bridge flows for both EOA and ERC-4337 smart-account senders, against a local testnet or one of
+three remote networks (`hoodi`, `sepolia-prod`, `sepolia-stage`).
+
+Two cross-chain submission modes:
+
+- **Sidecar REST** (`xt-submission: sidecar`) — `POST /xt` to the Compose Sidecar, poll instance
+  status. Used by `local` and `sepolia-stage`.
+- **Compose sequencer RPC** (`xt-submission: rpc`) — `eth_sendXTransaction` on the source rollup.
+  Used by `hoodi` and `sepolia-prod`. The payload encoding (SDK's `encodeXtMessage`) is done by
+  `scripts/encode-xt.ts`, which Go shells out to.
+
+Smart-account tests use ZeroDev Kernel v3.1 with multichain ECDSA signing. The signing logic stays
+in TS (`scripts/sa-helper.ts`); Go consumes the signed canonical UserOps, packs them into
+EntryPoint v0.7 `handleOps`, signs the outer tx, and submits.
 
 ## Development Commands
 
-### Building and Testing
-```bash
-make build          # Build test binary (bin/dome)
-make format         # Format code with go fmt
-make lint           # Run golangci-lint
-make deps           # Download and tidy dependencies
-make clean          # Clean build artifacts (removes bin/)
-make docker-build   # Build Docker image (dome:latest)
-```
-
-### Running Tests
-
-Tests are compiled into a binary (`bin/dome`) and all test targets automatically build this binary if needed. Tests require configuration in `configs/config.yaml` (see Configuration Setup below).
+### Build and tooling
 
 ```bash
-# Run all tests (automatically builds binary first)
-make test
-
-# Run tests with specific log levels
-make test-info                           # INFO log level, all tests
-make test-info TEST_NAME=TestBridge      # INFO log level, specific test
-make test-debug                          # DEBUG log level, all tests
-make test-debug TEST_NAME=TestBridge     # DEBUG log level, specific test
-
-# Run specific test suites
-make smoke-test                          # Run smoke tests only
-make stress-test                         # Run stress tests only
-
-# Run the test binary directly (with embedded config)
-./bin/dome -test.v -test.run=TestSendCrossTxBridge
-LOG_LEVEL=INFO ./bin/dome -test.v
-
-# Run with external config file
-CONFIG_PATH=./configs/config.yaml ./bin/dome -test.v
-CONFIG_PATH=/path/to/custom.yaml LOG_LEVEL=DEBUG ./bin/dome -test.v
+make build           # Build bin/dome test binary (auto-copies config.example.yaml → config.yaml)
+make scripts-install # Install Node deps in scripts/ (needed for rpc-mode and SA tests)
+make format          # go fmt
+make lint            # golangci-lint
+make deps            # go mod download + tidy
+make clean           # rm -rf bin/
+make docker-build    # Build dome:latest container
 ```
 
-Log levels are controlled via the `LOG_LEVEL` environment variable (DEBUG, INFO).
+### Running tests
 
-### Configuration Setup
+Tests are compiled into `bin/dome`. Each per-network Makefile target sets `CONFIG_PATH` to the
+matching YAML, then invokes the binary with optional filter/override env vars.
 
-Configuration supports both embedded and external loading:
+```bash
+# Local-testnet (uses embedded configs/config.yaml)
+make test                                # all tests
+make test-info TEST_NAME=TestBridge      # specific
+make smoke-test                          # smoke suite
+make stress-test                         # stress suite
 
-**Embedded Config (Default)**: Configuration is embedded at compile time using `//go:embed` from `configs/config.yaml`
+# Remote networks
+make test-hoodi          TEST_NAME='^TestL2ToL2_ETH_AtoB$'
+make test-sepolia-prod   TEST_FILE=l2_to_l2_eth_test
+make test-sepolia-stage  TEST_FILE=l2_to_l2_sa_new_token_test SOURCE=a DEST=b AMOUNT=25
 
-**External Config**: Set `CONFIG_PATH` environment variable to load from an external file (ideal for Docker and production)
+# Binary directly
+CONFIG_PATH=./configs/config.hoodi.yaml LOG_LEVEL=INFO \
+  ./bin/dome -test.v -test.run='^TestL2ToL2_ETH_AtoB$'
+```
 
-**Structure:**
+### Makefile knobs
+
+The `test-hoodi` / `test-sepolia-prod` / `test-sepolia-stage` targets accept:
+
+| Variable     | Effect                                                                       |
+|--------------|------------------------------------------------------------------------------|
+| `TEST_FILE`  | Short filename (e.g. `l2_to_l2_eth_test`). Expanded to `-test.run` regex matching every `Test*` function in that file via `grep`. |
+| `TEST_NAME`  | Raw `-test.run` regex.                                                       |
+| `SOURCE`     | `a`, `b`, or `l1`. Tests whose direction doesn't match `t.Skip()` cleanly.   |
+| `DEST`       | Same.                                                                        |
+| `AMOUNT`     | ETH (for ETH tests) or token-units (for token tests); multiplied by 10^18.   |
+| `AMOUNT_WEI` | Raw wei. Takes precedence over `AMOUNT`.                                     |
+
+`SOURCE`/`DEST` are read inside tests via `helpers.ApplyDirectionFilter(t, src, dst)`. `AMOUNT*`
+is read via `helpers.ParseBridgeAmountOverride(default)`.
+
+Log levels via `LOG_LEVEL` env (DEBUG, INFO).
+
+### Configuration
+
+Configs ship as one YAML per network:
+
+| File                                | Network         | XT submission | L1 | AA |
+|-------------------------------------|-----------------|---------------|----|----|
+| `configs/config.example.yaml`       | `local`         | sidecar       | —  | —  |
+| `configs/config.hoodi.yaml`         | `hoodi`         | rpc           | ✓  | ✓  |
+| `configs/config.sepolia-prod.yaml`  | `sepolia-prod`  | rpc           | ✓  | ✓  |
+| `configs/config.sepolia-stage.yaml` | `sepolia-stage` | sidecar       | ✓  | ✓  |
+
+Switch by setting `CONFIG_PATH=configs/config.<network>.yaml`.
+
+Loading: `CONFIG_PATH` (external) → embedded `configs/config.yaml` (compile-time) → panic.
+
+YAML shape (top-level):
+
 ```yaml
-l2:
-  sidecar-url: http://localhost:17090  # Compose Sidecar HTTP API
-  chain-configs:
-    rollup-a:
-      pk: 0x...        # Private key for funded account on rollup-a
-      id: 77777        # Chain ID for rollup-a
-      rpc-url: http://localhost:17545  # op-rbuilder (builder includes txs in blocks)
-    rollup-b:
-      pk: 0x...        # Private key for funded account on rollup-b
-      id: 88888        # Chain ID for rollup-b
-      rpc-url: http://localhost:27545  # op-rbuilder (builder includes txs in blocks)
+network: hoodi | sepolia-prod | sepolia-stage | local
+xt-submission: sidecar | rpc
+wallet-private-key: <hex without 0x>   # back-compat: falls back to chain-configs.rollup-a.pk
+
+l1:                                    # optional — absent on local
+  rpc-url: http://...
+  chain-id: 560048
   contracts:
-    bridge:           # ComposeL2ToL2Bridge
-      address: 0x...
-      abi: ''
-    token:            # MockL2ERC20 (standard ERC-20 + mint/burn)
-      address: 0x...
-      abi: ''
-    mailbox:          # UniversalBridgeMailbox
-      address: 0x...
-      abi: ''
-    cet-factory:      # CetFactory.predictAddress(remoteAsset, remoteChainID)
-      address: 0x...
-      abi: ''
+    compose-l1-bridge-rollup-a: { address, abi }
+    compose-l1-bridge-rollup-b: { address, abi }
+    compose-portal-rollup-a:    { address, abi }
+    compose-portal-rollup-b:    { address, abi }
+    dispute-game-factory:       { address, abi }   # required for L2->L1 finalize
+
+l2:
+  sidecar-url: ""                       # required when xt-submission=sidecar
+  chain-configs:
+    rollup-a: { id, rpc-url, bundler-url? }
+    rollup-b: { id, rpc-url, bundler-url? }
+  contracts:
+    bridge:        # ComposeL2ToL2Bridge       (required)
+    mailbox:       # UniversalBridgeMailbox    (required)
+    cet-factory:   # CetFactory                (required)
+    token:         # MockL2ERC20               (local only)
+    compose-l2-bridge-rollup-a: { … }   # required for L2->L1
+    compose-l2-bridge-rollup-b: { … }
+    eth-liquidity:                      # optional
+  aa:                                   # optional — absent on local
+    kernel-impl: 0x…
+    kernel-factory: 0x…
+    multichain-validator: 0x…
 ```
 
-**Setup steps:**
-1. If `configs/config.yaml` doesn't exist, `make build` will automatically copy it from `configs/config.example.yaml`
-2. Populate `configs/config.yaml` with sidecar URL, both rollups' keys/ids/RPCs, and the four contract entries (addresses + ABI JSON). Addresses come from `local-testnet/.localnet/networks/<chain>/contracts.json` after the L2 deploy.
-3. Rebuild the binary with `make build` to embed the updated config (for embedded use)
-   - OR set `CONFIG_PATH` environment variable to use external config (recommended for Docker/production)
+Validation runs at `configs` package init. Bad config → panic on binary startup with a joined
+list of every offending field.
 
-**Validation**: Config validation happens at package init time. The binary will panic on startup if:
-- `sidecar-url` is not set
-- Both `rollup-a` and `rollup-b` configs are not present
-- Any field (`pk`, `id`, `rpc-url`) is missing or zero-valued
-- The four contracts (`bridge`, `token`, `mailbox`, `cet-factory`) are not all present
-- Any contract address or ABI is empty
+Tests that depend on a missing optional section call `RequireL1(t)` / `RequireAA(t)` /
+`RequireL2BridgePerRollup(t)` / `RequireTSRuntime(t)` to skip cleanly.
 
 ## Architecture
 
-### Directory Structure
+### Directory structure
 
 ```
 dome/
-├── bin/              # Compiled test binary (bin/dome)
-├── build/            # Build artifacts
-│   └── Dockerfile    # Multi-stage Docker build
-├── configs/          # Configuration management
-│   ├── config.go     # Config structs, validation, and embed logic
-│   ├── config.yaml   # Main config file (gitignored, embedded at compile time)
-│   └── config.example.yaml  # Template for config.yaml
-├── internal/         # Core framework (private packages)
-│   ├── accounts/     # Account management for blockchain interactions
-│   ├── helpers/      # Test helper functions (bridge, mint, approve)
-│   ├── logger/       # Centralized logging with DEBUG/INFO levels
-│   ├── rollup/       # Rollup configuration and connection
-│   └── transactions/ # Transaction creation and sidecar submission
-└── test/             # Test files
-    ├── config.go     # Test setup and shared test variables
-    └── *_test.go     # Test implementations
+├── bin/dome                          # Compiled test binary
+├── build/Dockerfile
+├── configs/                          # YAML configs + embed glue
+│   ├── config.go                     # Schema, validation, IsLocal/HasL1/HasAA helpers
+│   ├── config.yaml                   # gitignored, embedded at compile time
+│   ├── config.example.yaml
+│   ├── config.{hoodi,sepolia-prod,sepolia-stage}.yaml
+├── internal/
+│   ├── accounts/                     # Account, NewRollupAccount, GetBalance, GetNonce
+│   ├── helpers/
+│   │   ├── bridge_txs.go             # PackBridgeERC20To, PackBridgeReceiveTokens, MessageHeader
+│   │   ├── eth_bridge.go             # PackBridgeEthTo, PackReceiveETH
+│   │   ├── erc20.go                  # SendMintTx, ApproveTokens, MintAndApproveCtx
+│   │   ├── erc20_deploy.go           # MintableTokenABI + bytecode, DeployMintableToken
+│   │   ├── cet.go                    # PredictCetAddress
+│   │   ├── gas.go                    # GasTipCap/FeeCap + per-call gas constants
+│   │   ├── l1_bridge.go              # PackBridgeETHTo, PackBridgeERC20ToL1, EncodeERC20ExtraData, SendL1Tx
+│   │   ├── l2_withdraw.go            # ExtractMessagePassed, FindCoveringDisputeGame, BuildWithdrawalProof, ProveWithdrawal/FinalizeWithdrawal helpers
+│   │   ├── eth_proof.go              # Raw eth_getProof JSON-RPC wrapper
+│   │   ├── poll.go                   # PollUntil, WaitForETHBalanceChange, WaitForTokenBalanceChange
+│   │   ├── sa_helper.go              # SA-side: SACreateAccount/CreateUserOps/ComposeAndSubmit, EntryPoint v0.7 PackedUserOperation, PackHandleOps, BuildHandleOpsRawTx, EnsureEntryPointDeposit
+│   │   ├── session_id.go             # GenerateSessionIDV1
+│   │   ├── state_file.go             # LoadJSONState/SaveJSONState/DeleteJSONState
+│   │   ├── test_overrides.go         # ApplyDirectionFilter, ParseBridgeAmountOverride
+│   │   ├── xt_submit.go              # SubmitXTRaw/Pair/WaitCommitted; sidecar vs rpc dispatch
+│   ├── logger/                       # DEBUG/INFO logger
+│   ├── rollup/                       # Rollup descriptor (name, chainID, rpcURL)
+│   └── transactions/
+│       ├── transactions.go           # CreateTransaction(WithNonce), SendTransaction, GetTransactionDetails, DistributeEth
+│       └── cross_tx.go               # Sidecar HTTP client: SubmitXT, GetXTStatus, WaitForDecision
+├── scripts/                          # TypeScript helpers + reference TS scripts
+│   ├── encode-xt.ts                  # SDK encodeXtMessage shell-out (rpc mode)
+│   ├── sa-helper.ts                  # SA: create-account, create-userops, compose-and-submit
+│   ├── package.json, tsconfig.json
+│   └── *.ts                          # Original TS test scripts (reference)
+└── test/                             # 44 Go tests in 15 files
+    ├── config.go                     # setup(), global rollups/accounts/ABIs, Require* helpers
+    ├── erc20_balance.go              # Tolerant ERC-20 balance read helper
+    ├── smoke_test.go                 # TestMain entry
+    ├── bridge_test.go, stress_test.go, uncorrelated_tx_test.go, xt_*_test.go
+    ├── l2_to_l2_{eth,new_token,existing_token,manual}_test.go
+    ├── l1_to_l2_{eth,new_token,existing_token,eth_stress,new_token_stress}_test.go
+    ├── l2_to_l1_{eth,token}_test.go
+    └── l2_to_l2_sa_{eth,new_token,existing_token,existing_token_stress}_test.go
 ```
 
-### Core Components
+### Core packages
 
-**configs/**: Configuration management with hybrid loading (embedded + external)
-- Single YAML file defines sidecar URL, both rollup configs, and contract addresses
-- Uses `//go:embed` directive to embed config.yaml into the binary as fallback
-- Supports external config loading via `CONFIG_PATH` environment variable
-- `configs.Values` global variable provides access to parsed config
-- Sidecar URL accessed via: `configs.Values.L2.SidecarURL`
-- Chain configs accessed via: `configs.Values.L2.ChainConfigs[configs.ChainNameRollupA]`
+**`configs/`** — Hybrid loading: external (via `CONFIG_PATH`) overrides embedded.
+`configs.Values` global is populated at package init. Helpers: `IsLocal()`, `HasL1()`, `HasAA()`,
+`HasL2BridgePerRollup()`, `HasBundlers()`. `ActiveNetwork` exposes the active network string.
 
-**internal/transactions/**: Transaction creation and sidecar interaction
-- `transactions.go`: Standard Ethereum transaction creation (EIP-1559 dynamic fee)
-- `cross_tx.go`: Sidecar HTTP client (`SubmitXT`, `GetXTStatus`, `WaitForDecision`)
-- `CreateTransaction()` creates and signs transactions with account's nonce
-- `SendTransaction()` sends signed transactions to RPC endpoints (for non-XT operations)
-- `GetTransactionDetails()` polls for transaction confirmation with retry intervals
+**`internal/transactions/`**
+- `transactions.go`: `CreateTransaction` (auto-nonce) and `CreateTransactionWithNonce` produce
+  signed EIP-1559 DynamicFee txs. `SendTransaction` broadcasts. `GetTransactionDetails` polls
+  for the receipt (30 × 600ms retries). `DistributeEth` mass-funds N recipients from one sender
+  with sequential nonces.
+- `cross_tx.go`: `SubmitXT(ctx, sidecarURL, transactions)` → `XTResponse{InstanceID, Status}`.
+  `WaitForDecision` polls `GET /xt/:id` until committed/aborted.
 
-**internal/helpers/**: Test helper functions
-- `SendBridgeTx()` / `SendBridgeTxWithNonce()`: Build and submit bridge XTs via sidecar
-- `SubmitXTAndWait()`: Generic submit + wait-for-decision helper
-- `SendMintTx()` / `ApproveTokens()`: ERC-20 operations (sent as normal txs)
-- `SendSelfMoveBalanceTx()`: ETH self-transfer (sent as normal tx)
+**`internal/helpers/xt_submit.go`** — `SubmitXTRaw`/`SubmitXTPair`/`SubmitXTWaitCommitted` route
+to sidecar or RPC mode based on `configs.Values.XTSubmission`. RPC mode calls `encodeXTPayload`
+(shells out to `scripts/encode-xt.ts`) and then POSTs `eth_sendXTransaction` to the source
+rollup. `HasTSRuntime()` checks `npx` is on PATH.
 
-### Cross-Rollup Transaction Flow (Sidecar)
+**`internal/helpers/sa_helper.go`** — Smart-account integration:
+- `SACreateAccount` → SA address + deployment status (TS shell-out).
+- `SACreateUserOps` → signed canonical UserOps for given calls (TS shell-out).
+- `SAComposeAndSubmit` → full SDK compose+send+wait; returns `[]SAComposedTx{Hash, ChainID}`.
+- `PackHandleOps` → ABI-encode EntryPoint v0.7 `handleOps([packedOps], beneficiary)`.
+- `PackCanonicalAsV07` → canonical UserOp → `PackedUserOperation`.
+- `BuildHandleOpsRawTx` → outer EIP-1559 tx to EntryPoint, signed, ready for sidecar.
+- `EnsureEntryPointDeposit` → tops SA's `EntryPoint.balanceOf` up to `MinEntryPointDeposit`.
+- `CheckUserOpSuccess` → parses `UserOperationEvent` in a receipt; returns `(success bool, gasUsed)`.
+- `StandardSATokenBridgeGasOverrides(src, dst)` → src callGas 3M, dst callGas 5M, dst verifGas
+  3.5M. Required for cross-chain SA calls; default estimator undershoots.
 
-1. Create and sign separate transactions for each rollup (RollupA and RollupB)
-2. Hex-encode signed transaction bytes (0x-prefixed)
-3. Build JSON payload: `{ "transactions": { "chainId": ["0x..."], "chainId2": ["0x..."] } }`
-4. POST to sidecar `/xt` endpoint, receive `{ "instance_id": "...", "status": "..." }`
-5. Poll `GET /xt/:id` until status is `committed` or `aborted`
-6. If committed: verify transaction receipts on each chain's RPC
-7. If aborted: neither transaction was executed
+**`internal/helpers/l1_bridge.go`, `l2_withdraw.go`, `eth_proof.go`** — L1↔L2 + L2→L1 bridge and
+withdrawal proof building (storage proof via raw `eth_getProof`, dispute-game lookup, prove +
+finalize against `ComposePortal`).
 
-### Sidecar API Endpoints Used
+**`internal/helpers/test_overrides.go`** — `ApplyDirectionFilter(t, src, dst)` checks
+`BRIDGE_SOURCE`/`BRIDGE_DEST` env vars and skips on mismatch. `ParseBridgeAmountOverride(default)`
+reads `BRIDGE_AMOUNT_WEI` (raw wei) or `BRIDGE_AMOUNT` (decimal ETH/tokens × 10^18).
 
-| Endpoint          | Method | Purpose                              |
-|-------------------|--------|--------------------------------------|
-| `/xt`             | POST   | Submit a cross-chain transaction     |
-| `/xt/:id`         | GET    | Poll XT status (committed/aborted)   |
-| `/health`         | GET    | Sidecar liveness check               |
+### Cross-rollup tx flow
 
-### Test Structure
+**Sidecar mode** (local, sepolia-stage):
 
-**test/config.go**:
-- Shared test setup with global variables for rollups, accounts, and sidecar URL
-- Loads config from `configs.Values` global
-- Parses contract ABIs for Bridge, Token, and CetFactory contracts
-- `setup()` mints `setupMintAmount` MockL2ERC20 to each main account and approves the bridge so test bodies start from a predictable token balance
+1. Sign txs per chain (Go: `transactions.CreateTransaction`).
+2. POST `{transactions: {chainId: [hex…]}}` → `<sidecar>/xt`; returns `{instance_id, status}`.
+3. `WaitForDecision` polls `GET /xt/:id` until `committed` / `aborted`.
+4. Verify receipts on each chain's RPC.
 
-**Test Files**:
-- `bridge_test.go`: Cross-rollup token bridge tests (mint, transfer A->B, B->A, failure scenarios)
-- `smoke_test.go`: TestMain entry point
-- `stress_test.go`: Load and stress testing (same account, different accounts, bidirectional, mixed)
-- `uncorrelated_tx_test.go`: Independent transaction failure tests
+**RPC mode** (hoodi, sepolia-prod):
 
-## Key Technical Details
+1. Sign txs per chain (Go).
+2. `helpers.SubmitXTRaw` shells out to `scripts/encode-xt.ts` to compute the XT payload.
+3. POST `eth_sendXTransaction(payload)` to the source rollup RPC.
+4. Compose sequencer cross-includes both txs; Go polls receipts on each rollup.
 
-### Transaction Types
-- All transactions use EIP-1559 dynamic fee structure (`DynamicFeeTx`)
-- Nonces are managed via `PendingNonceAt()` to handle concurrent transactions
-- Gas parameters (GasTipCap, GasFeeCap, Gas) come from `internal/helpers/gas.go` constants per call type (mint / approve / bridgeERC20To / receiveTokens / native)
+### Smart-account flow (ERC-4337 v0.7)
 
-### Wrapped-CET on the destination chain
+For each test:
 
-`ComposeL2ToL2Bridge.receiveTokens` mints a deterministic wrapper-CET (predicted by
-`CetFactory.predictAddress(sourceToken, sourceChainID)`) instead of the destination's
-original ERC-20. Destination-side balance assertions therefore must look up the CET
-address via `helpers.PredictCetAddress` and read balanceOf at that address. The source
-ERC-20 stays escrowed in the bridge.
+1. **Derive SA address** — `SACreateAccount` shells out to `sa-helper.ts create-account`.
+2. **Fund EntryPoint** — `EnsureEntryPointDeposit` checks `EntryPoint.balanceOf(SA)` and tops it
+   up to 0.05 ETH via `depositTo` if needed (called on both rollups).
+3. **Build UserOp calls** — Go-side ABI encoding for `bridgeEthTo`/`bridgeERC20To`/`receiveETH`/
+   `receiveTokens`/`approve`/`transfer` (whatever the test exercises).
+4. **Submit**:
+   - **rpc mode** → `SAComposeAndSubmit` (shells out to `sa-helper.ts compose-and-submit`).
+     TS does the full SDK flow including `await send.wait()`; returns `[]SAComposedTx{Hash, ChainID}`.
+     Go routes each hash to the matching rollup via `waitComposedReceipts`.
+   - **sidecar mode** → `SACreateUserOps` returns signed canonical UserOps; Go packs them with
+     `PackCanonicalAsV07` + `PackHandleOps`, signs the outer tx with `BuildHandleOpsRawTx`,
+     submits via `SubmitXTWaitCommitted`. After receipts land, `CheckUserOpSuccess` reads the
+     `UserOperationEvent` to verify inner success (on sepolia-stage this can be `false` due to
+     the documented `MessageNotFound()` issue — tests skip with a clear reason).
 
-### XT Submission Format
-Cross-rollup transactions use the sidecar's JSON HTTP API:
+### Two-phase tests (state files)
+
+Tests with long-lived flows persist state to `test/.<name>-state-<id>.json`:
+
+- L1→L2 / L2→L2 existing-token (EOA + SA): `_DeployPhase` then `_BridgePhase`.
+- L2→L2 manual: `_SendERC20` then (after coordinator relay) `_Receive`.
+- L2→L1: `_Withdraw` saves `MessagePassed`; `_Finalize` finds the dispute game, builds the
+  storage proof via `eth_getProof`, proves, waits for maturity, finalizes.
+
+`_Finalize` calls `t.Skip()` (not fail) when the proof isn't yet mature.
+
+### XT submission format (sidecar)
+
 ```json
 {
   "transactions": {
-    "77777": ["0x<rlp-encoded-signed-tx>"],
-    "88888": ["0x<rlp-encoded-signed-tx>"]
+    "100003": ["0x<rlp-signed-tx>"],
+    "200005": ["0x<rlp-signed-tx>"]
   }
 }
 ```
-Keys are chain IDs as strings, values are arrays of 0x-prefixed hex-encoded signed transactions.
 
-### Local-Testnet Port Mappings
+Chain IDs as strings, signed tx bytes 0x-prefixed.
+
+### Sidecar API
+
+| Endpoint  | Method | Purpose                            |
+|-----------|--------|------------------------------------|
+| `/xt`     | POST   | Submit a cross-chain transaction   |
+| `/xt/:id` | GET    | Poll status (committed/aborted)    |
+| `/health` | GET    | Liveness check                     |
+
+### Wrapped-CET semantics
+
+`ComposeL2ToL2Bridge.receiveTokens` mints a deterministic wrapper-CET (predicted by
+`CetFactory.predictAddress(sourceToken, sourceChainID)`) instead of the destination's original
+ERC-20. Destination assertions look up the CET via `helpers.PredictCetAddress` and read
+`balanceOf` at that address. The source-side ERC-20 stays escrowed in the bridge.
+
+### Local-testnet port mappings
+
 | Service         | Chain A | Chain B |
 |-----------------|---------|---------|
 | op-geth RPC     | 18545   | 28545   |
@@ -210,8 +305,35 @@ Keys are chain IDs as strings, values are arrays of 0x-prefixed hex-encoded sign
 | Sidecar API     | 17090   | 27090   |
 | Blockscout      | 19000   | 29000   |
 
-## Module Path
+## Key technical details
+
+### Transaction types
+- All txs are EIP-1559 `DynamicFeeTx`. `GasTipCap` / `GasFeeCap` defaults in
+  `internal/helpers/gas.go`.
+- Nonces via `PendingNonceAt()`. Stress and parallel-bridge tests precompute nonce ranges to
+  avoid pending-pool races.
+- Gas per call type lives in `internal/helpers/gas.go` (mint / approve / native / bridgeERC20To /
+  receiveTokens) and `l1_bridge.go` (L1 portal calls). Override via constants — never inline.
+
+### Wallet model
+- One `wallet-private-key` at top-level (the EOA, shared across all rollups).
+- The same key is used to derive the SA address (deterministic via Kernel factory).
+- Stress tests derive child accounts from the master key via
+  `keccak256(masterPK || i)` (mirrors the TS script's `deriveAccounts`).
+
+### Known issues
+- **SA on sepolia-stage**: `handleOps` outer tx succeeds but inner UserOp reverts with
+  `MessageNotFound()`. SA tests detect this via `CheckUserOpSuccess` and `t.Skip("known issue
+  on stage: …")`.
+- **Compose sequencer receipt latency**: in rpc mode, `eth_sendXTransaction` may return before
+  the actual chain txs land. The TS helper `sa-helper.ts compose-and-submit` blocks on
+  `await send.wait()` to mitigate this; if receipts still don't appear, the SDK has likely
+  timed out and the txs aren't being sequenced — investigate at the network layer.
+
+## Module path
+
 `github.com/ethera-labs/dome`
 
-## Go Version
+## Go version
+
 1.25
