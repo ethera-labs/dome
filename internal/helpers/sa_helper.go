@@ -41,6 +41,31 @@ const EntryPointABI = `[
 // scripts' 0.05 ETH constant.
 var MinEntryPointDeposit = new(big.Int).Mul(big.NewInt(5), big.NewInt(10_000_000_000_000_000)) // 0.05 ETH
 
+// AssertAAContractsDeployed verifies the three Kernel-v3.1 AA contracts (impl,
+// factory, multichain validator) all have non-empty bytecode at the given RPC.
+// Used by L1↔L2 SA tests as a precondition because the validator in
+// particular is not deployed on every L1 yet — see to-do.md item 1.
+func AssertAAContractsDeployed(ctx context.Context, rpcURL string) error {
+	if !configs.Values.HasAA() {
+		return fmt.Errorf("no aa section in config")
+	}
+	aa := configs.Values.L2.AA
+	checks := []struct {
+		name string
+		addr common.Address
+	}{
+		{"kernel-impl", aa.KernelImpl},
+		{"kernel-factory", aa.KernelFactory},
+		{"multichain-validator", aa.MultichainValidator},
+	}
+	for _, c := range checks {
+		if err := AssertContractDeployed(ctx, rpcURL, c.addr); err != nil {
+			return fmt.Errorf("%s not deployed at %s on %s: %w", c.name, c.addr.Hex(), rpcURL, err)
+		}
+	}
+	return nil
+}
+
 // UserOperationEventTopic is the topic0 of EntryPoint v0.7's UserOperationEvent.
 // Data layout: (uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed).
 //   keccak256("UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)")

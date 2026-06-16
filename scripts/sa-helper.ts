@@ -24,14 +24,18 @@
 import { ethers } from "ethers";
 import {
   http,
+  concatHex,
+  encodeAbiParameters,
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { getUserOperationHash, prepareUserOperation } from "viem/account-abstraction";
 import { createConfig } from "@wagmi/core";
 import {
   createComposeConfig,
   createSmartAccount,
   composeUnpreparedUserOps,
+  toRpcUserOpCanonical,
   type UserOPCall,
 } from "@ssv-labs/ethera-sdk";
 
@@ -41,6 +45,10 @@ import {
 type NetworkID = "hoodi" | "sepolia-prod" | "sepolia-stage";
 
 interface NetworkCfg {
+  l1?: {
+    id: number;
+    rpc: string;
+  };
   rollupA: {
     id: number;
     rpc: string;
@@ -61,6 +69,7 @@ interface NetworkCfg {
 
 const NETWORKS: Record<NetworkID, NetworkCfg> = {
   "hoodi": {
+    l1: { id: 560048, rpc: "http://hoodi-geth-lh-1-execution.production.vnet.ops.ssvlabsinternal.com" },
     rollupA: { id: 11113, rpc: "https://rpc-a.testnet.compose.network/" },
     rollupB: { id: 22224, rpc: "https://rpc-b.testnet.compose.network/" },
     aa: {
@@ -70,6 +79,7 @@ const NETWORKS: Record<NetworkID, NetworkCfg> = {
     },
   },
   "sepolia-prod": {
+    l1: { id: 11155111, rpc: "http://141.95.35.120:31070" },
     rollupA: { id: 555555, rpc: "https://rpc-a-altda.sepolia.ethera-labs.io/" },
     rollupB: { id: 666666, rpc: "https://rpc-b-altda.sepolia.ethera-labs.io/" },
     aa: {
@@ -79,6 +89,7 @@ const NETWORKS: Record<NetworkID, NetworkCfg> = {
     },
   },
   "sepolia-stage": {
+    l1: { id: 11155111, rpc: "http://141.95.35.120:31070" },
     rollupA: {
       id: 100003,
       rpc: "https://op-rbuilder-a.stage.ethera-labs.io",
@@ -147,21 +158,26 @@ function getPrivateKey(): Hex {
 function buildComposeConfig(cfg: NetworkCfg) {
   const rollupA = defineChain(cfg.rollupA.id, "Rollup A", cfg.rollupA.rpc);
   const rollupB = defineChain(cfg.rollupB.id, "Rollup B", cfg.rollupB.rpc);
+  const l1 = cfg.l1 ? defineChain(cfg.l1.id, "L1", cfg.l1.rpc) : undefined;
 
-  const wagmi = (createConfig as any)({
-    chains: [rollupA, rollupB],
-    transports: {
-      [rollupA.id]: http(rollupA.rpcUrls.default.http[0]),
-      [rollupB.id]: http(rollupB.rpcUrls.default.http[0]),
-    },
-  });
+  const chains: any[] = l1 ? [l1, rollupA, rollupB] : [rollupA, rollupB];
+  const transports: Record<number, any> = {
+    [rollupA.id]: http(rollupA.rpcUrls.default.http[0]),
+    [rollupB.id]: http(rollupB.rpcUrls.default.http[0]),
+  };
+  if (l1) transports[l1.id] = http(l1.rpcUrls.default.http[0]);
+
+  const wagmi = (createConfig as any)({ chains, transports });
+
+  const aaMap: Record<number, typeof cfg.aa> = {
+    [rollupA.id]: cfg.aa,
+    [rollupB.id]: cfg.aa,
+  };
+  if (l1) aaMap[l1.id] = cfg.aa;
 
   const compose = createComposeConfig({
     wagmi,
-    accountAbstractionContracts: {
-      [rollupA.id]: cfg.aa,
-      [rollupB.id]: cfg.aa,
-    },
+    accountAbstractionContracts: aaMap as any,
   });
 
   return { rollupA, rollupB, wagmi, compose };
@@ -189,9 +205,13 @@ async function createAccount() {
     compose as any,
   );
 
-  // isDeployed: best-effort via getCode.
-  const rpc = chainId === rollupA.id ? cfg.rollupA.rpc : cfg.rollupB.rpc;
-  const provider = new ethers.JsonRpcProvider(rpc);
+  // isDeployed: best-effort via getCode. Pick the RPC matching chainId.
+  let rpc: string;
+  if (chainId === rollupA.id) rpc = cfg.rollupA.rpc;
+  else if (chainId === rollupB.id) rpc = cfg.rollupB.rpc;
+  else if (cfg.l1 && chainId === cfg.l1.id) rpc = cfg.l1.rpc;
+  else fail(`chainId ${chainId} doesn't match L1 or either rollup in network config`);
+  const provider = new ethers.JsonRpcProvider(rpc!);
   const code = await provider.getCode(sa.account.address);
   const isDeployed = code !== "0x" && code !== "0x0";
 
@@ -284,10 +304,49 @@ async function prepareAndSignUserOps(
     }
   }
 
-  // Intercept compose_buildSignedUserOpsTx + eth_sendXTransaction on each
-  // chain's publicClient so the SDK signs UserOps without trying to submit.
+  // Single-op SA flows (e.g. L1→L2 or L2→L1 with a smart account) hit the
+  // SDK's `prepareAndSignUserOperations` "Should send more than 1 user
+  // operation" guard. The lower-level signing primitive `signUserOperations`
+  // actually supports N=1 fine — it builds a merkle tree of size 1 (root =
+  // leaf, proof = []). We bypass the guard by signing manually for the N=1
+  // case using the same on-chain format the multichain validator expects.
   const capturedByChain: Record<number, any[]> = {};
 
+  if (operations.length === 1) {
+    const op = operations[0];
+    const prepared = await prepareUserOperation(op.publicClient as any, {
+      account: op.account,
+      ...op.userOp,
+    });
+
+    const userOpHash = getUserOperationHash({
+      userOperation: { ...prepared, signature: "0x" } as any,
+      entryPointAddress: op.account.entryPoint.address,
+      entryPointVersion: op.account.entryPoint.version,
+      chainId: op.chainId,
+    });
+
+    // signature = ecdsaSig || merkleRoot || abi.encode(proof=[])
+    const ecdsaSig = await op.account.kernelPluginManager.signMessage({
+      message: { raw: userOpHash },
+    });
+    const encodedProof = encodeAbiParameters(
+      [{ name: "proof", type: "bytes32[]" }],
+      [[]],
+    );
+    const signature = concatHex([ecdsaSig, userOpHash, encodedProof]);
+
+    const signedCanonical = toRpcUserOpCanonical({
+      ...prepared,
+      signature,
+    } as any);
+    capturedByChain[op.chainId] = [signedCanonical];
+    return { capturedOps: { capturedByChain }, eoa: signer.address };
+  }
+
+  // N >= 2: keep using the SDK's compose flow. Intercept
+  // compose_buildSignedUserOpsTx + eth_sendXTransaction on each chain's
+  // publicClient so the SDK signs UserOps without trying to submit.
   for (const op of operations) {
     const original = op.publicClient.request.bind(op.publicClient);
     op.publicClient = new Proxy(op.publicClient, {

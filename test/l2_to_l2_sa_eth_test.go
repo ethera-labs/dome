@@ -112,13 +112,19 @@ func runL2ToL2SAETH(
 	// 6. Assert balances.
 	srcAfter := readBalance(ctx, srcChain.RPCURL(), saAddr)
 	dstAfter := readBalance(ctx, dstChain.RPCURL(), saAddr)
+	// In ERC-4337 v0.7 the SA pays no gas from its own balance — gas comes from
+	// its EntryPoint deposit. So both sides should change by EXACTLY the
+	// bridge amount.
 	srcDecrease := new(big.Int).Sub(srcBefore, srcAfter)
 	dstIncrease := new(big.Int).Sub(dstAfter, dstBefore)
-	helpers.LogAssertOK("SA source ETH decreased by >= bridge amount: delta=%s want>=%s", srcDecrease, saETHBridgeAmount)
-	require.GreaterOrEqualf(t, srcDecrease.Cmp(saETHBridgeAmount), 0,
-		"source decrease=%s want>=%s", srcDecrease, saETHBridgeAmount)
-	helpers.LogAssertOK("SA dest ETH balance increased: delta=%s want>0", dstIncrease)
-	require.Positive(t, dstIncrease.Sign(), "dest balance should increase")
+	helpers.LogAssertOK("SA source ETH decreased by exactly bridge amount: delta=%s want=%s", srcDecrease, saETHBridgeAmount)
+	require.Equalf(t, 0, srcDecrease.Cmp(saETHBridgeAmount),
+		"SA source decrease mismatch: got=%s want=%s (gas should come from EntryPoint deposit, not SA balance)",
+		srcDecrease, saETHBridgeAmount)
+	helpers.LogAssertOK("SA dest ETH increased by exactly bridge amount: delta=%s want=%s", dstIncrease, saETHBridgeAmount)
+	require.Equalf(t, 0, dstIncrease.Cmp(saETHBridgeAmount),
+		"SA dest increase mismatch: got=%s want=%s (gas should come from EntryPoint deposit, not SA balance)",
+		dstIncrease, saETHBridgeAmount)
 }
 
 func ensureSABalance(ctx context.Context, funder *accounts.Account, sa common.Address, amount *big.Int) error {
