@@ -1,0 +1,17 @@
+{
+  "name": "dome-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TypeScript helpers invoked by the Go test framework. Run `make scripts-install` once before running tests that use xt-submission=rpc or smart-account flows.",
+  "dependencies": {
+    "@ssv-labs/ethera-sdk": "^0.0.1",
+    "@wagmi/core": "^2.22.1",
+    "ethers": "^6.13.0",
+    "viem": "^2.48.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.5.0"
+  }
+}

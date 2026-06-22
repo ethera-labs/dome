@@ -21,6 +21,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var transferredAmount = big.NewInt(100000000000000000) // 0.1 tokens
+
 // TestCommittedXtCanStillFailAfterDestinationStateDrift encodes the desired
 // invariant for XT execution:
 //  1. if the system commits an XT, the destination leg must still land, even if
@@ -34,6 +36,7 @@ import (
 // destination-chain preconditions. In the buggy case this test fails with:
 // committed XT + missing destination receipt.
 func TestCommittedXtCanStillFailAfterDestinationStateDrift(t *testing.T) {
+	t.Skip("uses MockL2ERC20 (local-only token) and reads SIDECAR_XT_ENDPOINT directly — local-testnet only; re-enable when ported to read configs.Values.L2.SidecarURL + a deployable ERC-20")
 	ctx := t.Context()
 	ensureXtEndpoint(t)
 

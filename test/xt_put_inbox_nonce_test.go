@@ -21,6 +21,7 @@ import (
 var gasFundingAmount = big.NewInt(100000000000000000) // 0.1 ETH
 
 func TestRejectedDuplicateNonceXtDoesNotBlockFollowingXt(t *testing.T) {
+	t.Skip(xtDirectSidecarSkipReason)
 	ctx := t.Context()
 	accountA, accountB := setupAccountsNoApprovals(t)
 	ensureXtEndpoint(t)

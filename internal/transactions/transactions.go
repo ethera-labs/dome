@@ -136,6 +136,14 @@ func GenerateRandomSessionID() *big.Int {
 // GetTransactionDetails retrieves transaction details from the blockchain using the transaction hash and RPC URL
 // It will wait and retry every 600 milliseconds if the transaction is pending until it's confirmed or fails
 func GetTransactionDetails(ctx context.Context, txHash common.Hash, rollup *rollup.Rollup) (*types.Transaction, *types.Receipt, error) {
+	return GetTransactionDetailsWithRetries(ctx, txHash, rollup, txConfirmMaxRetries)
+}
+
+// GetTransactionDetailsWithRetries is GetTransactionDetails with a caller-
+// controlled retry budget. Callers that just queued a batch of txs from a
+// single sender should size maxRetries to cover the wall-clock time it takes
+// for the tail of the queue to be included on chain.
+func GetTransactionDetailsWithRetries(ctx context.Context, txHash common.Hash, rollup *rollup.Rollup, maxRetries int) (*types.Transaction, *types.Receipt, error) {
 	// Create Ethereum client
 	client, err := ethclient.DialContext(ctx, rollup.RPCURL())
 	if err != nil {
@@ -148,8 +156,6 @@ func GetTransactionDetails(ctx context.Context, txHash common.Hash, rollup *roll
 	// Start timer before polling for transaction status
 	startTime := time.Now()
 
-	// Retry counter for "not found" errors
-	maxRetries := txConfirmMaxRetries
 	retryCount := 0
 	retryInterval := txConfirmRetryInterval
 
@@ -228,8 +234,15 @@ func DistributeEth(ctx context.Context, sponsor *accounts.Account, recipients []
 	}
 
 	// All txs use sequential nonces from the same sponsor, so confirming the
-	// last one guarantees all preceding ones are also included.
-	_, receipt, err := GetTransactionDetails(ctx, lastTx.Hash(), sponsor.GetRollup())
+	// last one guarantees all preceding ones are also included. Scale the
+	// retry budget with the batch size so heavy distributions don't time out
+	// waiting for the tail of the queue: at 600ms per retry, 4 retries per
+	// recipient ≈ 2.4s of budget per tx, comfortably above L1 block time.
+	maxRetries := txConfirmMaxRetries
+	if scaled := 4 * len(recipients); scaled > maxRetries {
+		maxRetries = scaled
+	}
+	_, receipt, err := GetTransactionDetailsWithRetries(ctx, lastTx.Hash(), sponsor.GetRollup(), maxRetries)
 	if err != nil {
 		return fmt.Errorf("failed to get transaction receipt: %w", err)
 	}
