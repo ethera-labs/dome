@@ -41,11 +41,20 @@ func l2ToL2ManualStateName(src, dst *rollup.Rollup) string {
 	return fmt.Sprintf(".l2-to-l2-manual-state-%s-%s.json", src.Name(), dst.Name())
 }
 
+// l2ToL2ManualSkipReason: the manual non-atomic bridge needs an off-chain
+// coordinator/publisher to relay the source-side mailbox message to the
+// destination. That service only exists on local-testnet; on every remote env
+// (and even on local without the publisher container running) the destination
+// _Receive call has nothing to consume. Superseded by the atomic XT path.
+const l2ToL2ManualSkipReason = "manual two-step bridge needs an off-chain coordinator to relay mailbox messages — superseded by the atomic XT flow; re-enable only against a deployment that runs a publisher service"
+
 func TestL2ToL2_Manual_SendERC20_AtoB(t *testing.T) {
+	t.Skip(l2ToL2ManualSkipReason)
 	runL2ToL2ManualSendERC20(t, TestAccountA, TestRollupA, TestAccountB, TestRollupB)
 }
 
 func TestL2ToL2_Manual_Receive_AtoB(t *testing.T) {
+	t.Skip(l2ToL2ManualSkipReason)
 	runL2ToL2ManualReceive(t, TestAccountB, TestRollupA, TestRollupB)
 }
 

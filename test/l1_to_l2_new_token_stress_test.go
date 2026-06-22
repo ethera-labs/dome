@@ -8,10 +8,10 @@ import (
 	"math/big"
 	"os"
 	"strconv"
-	"sync"
 	"testing"
-	"time"
 
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ethera-labs/dome/configs"
@@ -85,29 +85,68 @@ func runL1ToL2NewTokenStress(t *testing.T, destRollup configs.ChainName, destCha
 		require.NoError(t, transactions.DistributeEth(ctx, TestL1Account, needFunding, fundAmount))
 	}
 
-	// 4. From the funder, mint 100 to each derived account on L1. Sequential
-	//    so we don't blow nonces.
+	// 4. From the funder, mint to each derived account on L1. Submit all in
+	//    parallel with sequential nonces from the funder, then wait on the
+	//    last receipt — same DistributeEth pattern. The old sequential
+	//    SendL1Tx-per-mint loop was waiting one L1 block per mint (~12s),
+	//    which at N=100 burned 20+ minutes for the mint phase alone.
+	masterNonce, err := TestL1Account.GetNonce(ctx)
+	require.NoError(t, err)
+	var lastMint *types.Transaction
 	for i, ac := range accountsOnL1 {
 		mintData, err := tokenABI.Pack("mint", ac.GetAddress(), bridgeAmt)
 		require.NoError(t, err)
-		_, _, err = helpers.SendL1Tx(ctx, TestL1Account, tokenAddr, big.NewInt(0), helpers.GasMint, mintData)
+		tx, _, err := transactions.CreateTransactionWithNonce(ctx, transactions.TransactionDetails{
+			To:        tokenAddr,
+			Value:     big.NewInt(0),
+			Gas:       helpers.GasMint,
+			GasTipCap: helpers.GasTipCap,
+			GasFeeCap: helpers.GasFeeCap,
+			Data:      mintData,
+		}, TestL1Account, masterNonce+uint64(i))
 		require.NoError(t, err)
-		logger.Info("%s minted 100 to account %d (%s)", tag, i, ac.GetAddress().Hex())
+		_, err = transactions.SendTransaction(ctx, tx, TestL1Account.GetRollup().RPCURL())
+		require.NoError(t, err)
+		lastMint = tx
 	}
+	mintReceiptRetries := 4 * numAcc
+	if mintReceiptRetries < 30 {
+		mintReceiptRetries = 30
+	}
+	_, _, err = transactions.GetTransactionDetailsWithRetries(ctx, lastMint.Hash(), TestL1Account.GetRollup(), mintReceiptRetries)
+	require.NoError(t, err, "wait for last mint receipt")
+	logger.Info("%s minted to %d accounts (last hash %s)", tag, numAcc, lastMint.Hash().Hex())
 
-	// 5. Each account approves the bridge — concurrent OK, different nonces.
-	var approveWg sync.WaitGroup
-	for i, ac := range accountsOnL1 {
-		approveWg.Add(1)
-		go func(i int, ac *accounts.Account) {
-			defer approveWg.Done()
+	// 5. Each account approves the bridge in parallel. Same round-retry
+	//    helper as the bridge step — approves are cheap, but at large N the
+	//    18s receipt poll in SendL1Tx isn't always enough and we don't want
+	//    to crash a goroutine with require.* on a transient timeout.
+	const approveMaxRounds = 5
+	approveTxs, approveErrs := runConcurrentTxRounds(ctx, accountsOnL1,
+		func(_ int, ac *accounts.Account) (*types.Transaction, error) {
 			approveData, err := tokenABI.Pack("approve", bridgeAddr, bridgeAmt)
-			require.NoError(t, err)
-			_, _, err = helpers.SendL1Tx(ctx, ac, tokenAddr, big.NewInt(0), helpers.GasApprove, approveData)
-			require.NoError(t, err)
-		}(i, ac)
+			if err != nil {
+				return nil, err
+			}
+			tx, _, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
+				To:        tokenAddr,
+				Value:     big.NewInt(0),
+				Gas:       helpers.GasApprove,
+				GasTipCap: helpers.GasTipCap,
+				GasFeeCap: helpers.GasFeeCap,
+				Data:      approveData,
+			}, ac)
+			return tx, err
+		}, tag+" approve", approveMaxRounds)
+	for i, err := range approveErrs {
+		if approveTxs[i] != nil {
+			continue
+		}
+		assert.NoErrorf(t, err, "account %d (%s) approve: %v",
+			i, accountsOnL1[i].GetAddress().Hex(), err)
 	}
-	approveWg.Wait()
+	require.Equalf(t, numAcc, countNonNilTx(approveTxs),
+		"only %d/%d approves confirmed", countNonNilTx(approveTxs), numAcc)
 
 	// 6. Bridge: account 0 first (CET-deploy gas), then the rest concurrent.
 	bridgeFunc := func(ac *accounts.Account, minGas uint32) error {
@@ -134,46 +173,40 @@ func runL1ToL2NewTokenStress(t *testing.T, destRollup configs.ChainName, destCha
 		"CET contract should be deployed on L2 after account 0's bridge")
 
 	logger.Info("%s account 0 received CET; bridging remaining %d concurrently", tag, numAcc-1)
-	const maxRetries = 5
-	const retryDelay = 15 * time.Second
-	succeeded := make([]bool, numAcc)
-	succeeded[0] = true
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		var wg sync.WaitGroup
-		for i := 1; i < numAcc; i++ {
-			if succeeded[i] {
-				continue
+	// Use runConcurrentTxRounds to retry only on actual on-chain reverts
+	// (= OP portal's per-L1-block deposit gas cap was hit). See the helper's
+	// doc for why receipt-poll timeouts are NOT a retry signal here.
+	const maxRounds = 10
+	bridgeTxs, bridgeErrs := runConcurrentTxRounds(ctx, accountsOnL1[1:],
+		func(_ int, ac *accounts.Account) (*types.Transaction, error) {
+			data, err := helpers.PackBridgeERC20ToL1(ComposeL1BridgeABI,
+				tokenAddr, cetAddr, ac.GetAddress(),
+				bridgeAmt, uint32(helpers.L1MinGasLimitERC20), extraData)
+			if err != nil {
+				return nil, err
 			}
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				if err := bridgeFunc(accountsOnL1[i], uint32(helpers.L1MinGasLimitERC20)); err != nil {
-					logger.Debug("%s acct %d attempt %d failed: %v", tag, i, attempt, err)
-					return
-				}
-				succeeded[i] = true
-			}(i)
-		}
-		wg.Wait()
+			tx, _, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
+				To:        bridgeAddr,
+				Value:     big.NewInt(0),
+				Gas:       helpers.L1BridgeGasLimit,
+				GasTipCap: helpers.GasTipCap,
+				GasFeeCap: helpers.GasFeeCap,
+				Data:      data,
+			}, ac)
+			return tx, err
+		}, tag, maxRounds)
 
-		done := 0
-		for _, s := range succeeded {
-			if s {
-				done++
-			}
+	confirmed := countNonNilTx(bridgeTxs) + 1 // +1 for account 0 above
+	for i, err := range bridgeErrs {
+		if bridgeTxs[i] != nil {
+			continue
 		}
-		if done == numAcc {
-			break
-		}
-		logger.Info("%s attempt %d: %d/%d succeeded", tag, attempt, done, numAcc)
-		if attempt < maxRetries {
-			time.Sleep(retryDelay)
-		}
+		// i is relative to accountsOnL1[1:], so the real account index is i+1.
+		assert.NoErrorf(t, err, "account %d (%s) bridge: %v",
+			i+1, accountsOnL1[i+1].GetAddress().Hex(), err)
 	}
-	for i, s := range succeeded {
-		require.Truef(t, s, "account %d (%s) failed bridge after retries",
-			i, accountsOnL1[i].GetAddress().Hex())
-	}
+	require.Equalf(t, numAcc, confirmed,
+		"only %d/%d bridges confirmed after %d rounds", confirmed, numAcc, maxRounds+1)
 
 	// 7. Assert all L1 balances are 0 and all L2 CET balances are 100.
 	for i, ac := range accountsOnL1 {

@@ -35,7 +35,15 @@ import (
 
 var l1ToL2SAETHBridgeAmount = big.NewInt(10_000_000_000_000_000) // 0.01 ETH
 
+// l1SABlockedReason is the permanent skip reason for the L1↔L2 smart-account
+// tests. The Kernel multichain ECDSA validator (and on Hoodi the entire
+// Kernel stack) is not deployed on L1 yet, so the precondition step fails on
+// every configured network. Remove the t.Skip calls once L1 AA infra ships.
+// See test-catalogue.md items #6 and #7.
+const l1SABlockedReason = "blocked: L1 smart-account infrastructure not deployed (Kernel multichain validator missing on L1) — see test-catalogue.md #6/#7"
+
 func TestL1ToL2_SA_ETH_RollupA(t *testing.T) {
+	t.Skip(l1SABlockedReason)
 	helpers.ApplyDirectionFilter(t, "l1", "a")
 	RequireL1(t)
 	RequireAA(t)
@@ -44,6 +52,7 @@ func TestL1ToL2_SA_ETH_RollupA(t *testing.T) {
 }
 
 func TestL1ToL2_SA_ETH_RollupB(t *testing.T) {
+	t.Skip(l1SABlockedReason)
 	helpers.ApplyDirectionFilter(t, "l1", "b")
 	RequireL1(t)
 	RequireAA(t)

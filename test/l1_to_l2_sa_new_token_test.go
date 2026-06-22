@@ -38,6 +38,7 @@ import (
 
 // Same default as the L2 SA token tests: 100 * 1e18.
 func TestL1ToL2_SA_NewToken_RollupA(t *testing.T) {
+	t.Skip(l1SABlockedReason)
 	helpers.ApplyDirectionFilter(t, "l1", "a")
 	RequireL1(t)
 	RequireAA(t)
@@ -46,6 +47,7 @@ func TestL1ToL2_SA_NewToken_RollupA(t *testing.T) {
 }
 
 func TestL1ToL2_SA_NewToken_RollupB(t *testing.T) {
+	t.Skip(l1SABlockedReason)
 	helpers.ApplyDirectionFilter(t, "l1", "b")
 	RequireL1(t)
 	RequireAA(t)

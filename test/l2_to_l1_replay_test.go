@@ -23,11 +23,9 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -40,24 +38,6 @@ import (
 	"github.com/ethera-labs/dome/internal/rollup"
 	"github.com/ethera-labs/dome/internal/transactions"
 )
-
-// minimalDisputeGameABI carries just enough of the DisputeGameFactory + the
-// FaultDisputeGame proxy interface for `helpers.FindCoveringDisputeGame`:
-//   - factory.gameCount()
-//   - factory.gameAtIndex(uint256) returns (uint32, uint64, address)
-//   - gameProxy.extraData() returns (bytes)
-// The stage config doesn't ship a `dispute-game-factory` entry (only Hoodi
-// does), so the replay test loads this minimal ABI itself rather than relying
-// on the global `DisputeGameABI` populated by setup().
-const minimalDisputeGameABI = `[
-	{"type":"function","name":"gameCount","inputs":[],"outputs":[{"type":"uint256"}],"stateMutability":"view"},
-	{"type":"function","name":"gameAtIndex","inputs":[{"name":"_index","type":"uint256"}],"outputs":[{"type":"uint32"},{"type":"uint64"},{"type":"address"}],"stateMutability":"view"},
-	{"type":"function","name":"extraData","inputs":[],"outputs":[{"type":"bytes"}],"stateMutability":"view"}
-]`
-
-func parseMinimalDisputeGameABI() (abi.ABI, error) {
-	return abi.JSON(strings.NewReader(minimalDisputeGameABI))
-}
 
 // Same withdrawal amount as the regular L2->L1 ETH test — the replay logic
 // doesn't care about magnitude, just that the proof is valid.
@@ -327,10 +307,8 @@ func buildL2ToL1Proof(
 	require.NoError(t, helpers.CallPortalView(ctx, TestL1.RPCURL(), portalAddr, ComposePortalABI,
 		"respectedGameType", &gameType))
 
-	dgfABI, err := parseMinimalDisputeGameABI()
-	require.NoError(t, err)
 	idx, coveredBlock, err := helpers.FindCoveringDisputeGame(ctx, TestL1.RPCURL(),
-		dgfAddr, dgfABI, dgfABI,
+		dgfAddr, helpers.MinimalDisputeGameABI, helpers.MinimalDisputeGameABI,
 		gameType, state.L2Block, 30*time.Second, helpers.DefaultPollAttempts*6,
 	)
 	require.NoError(t, err)

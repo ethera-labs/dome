@@ -265,8 +265,8 @@ func proveL2ToL1TokenWithdrawal(
 	}
 
 	gameIndex, coveredBlock, err := helpers.FindCoveringDisputeGame(ctx, TestL1.RPCURL(),
-		dgfAddr, DisputeGameABI, DisputeGameABI, gameType, state.L2Block,
-		30*time.Second, helpers.DefaultPollAttempts*6,
+		dgfAddr, helpers.MinimalDisputeGameABI, helpers.MinimalDisputeGameABI,
+		gameType, state.L2Block, 30*time.Second, helpers.DefaultPollAttempts*6,
 	)
 	if err != nil {
 		return fmt.Errorf("find dispute game: %w", err)

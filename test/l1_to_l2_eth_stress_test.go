@@ -13,13 +13,12 @@ import (
 	"math/big"
 	"os"
 	"strconv"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ethera-labs/dome/configs"
@@ -32,8 +31,11 @@ import (
 
 const (
 	l1StressDefaultAccounts = 25
-	// Buffer over the bridge value to cover gas on the L1 portal call.
-	l1StressFundBuffer = "50000000000000000" // 0.05 ETH in wei
+	// Per-account L1 gas budget for one bridge call. Sized for current Sepolia
+	// gas prices: L1BridgeGasLimit=5M × ~20 gwei ≈ 0.10 ETH per tx, so we keep
+	// 0.15 ETH of headroom and fund 2× that so an account survives a couple of
+	// retries before needing a refill.
+	l1StressFundBuffer = "150000000000000000" // 0.15 ETH in wei
 )
 
 var l1StressBridgeAmount = big.NewInt(10_000_000_000_000_000) // 0.01 ETH
@@ -80,9 +82,12 @@ func runL1ToL2ETHStress(t *testing.T, destRollup configs.ChainName, destChain *r
 	}
 
 	// 2. Fund accounts on L1 that don't have enough yet.
+	// Funding formula mirrors l1_to_l2_new_token_stress_test: a refill happens
+	// when the account drops below `bridge + buf`; the refill itself tops it
+	// up to `bridge + buf*2` so a tx (+ a retry) can land before next refill.
 	buf, _ := new(big.Int).SetString(l1StressFundBuffer, 10)
 	minRequired := new(big.Int).Add(l1StressBridgeAmount, buf)
-	fundAmount := new(big.Int).Mul(l1StressBridgeAmount, big.NewInt(10)) // 0.1 ETH
+	fundAmount := new(big.Int).Add(l1StressBridgeAmount, new(big.Int).Mul(buf, big.NewInt(2)))
 	var needFunding []*accounts.Account
 	for _, ac := range accountsOnL1 {
 		bal, err := ac.GetBalance(ctx)
@@ -106,57 +111,38 @@ func runL1ToL2ETHStress(t *testing.T, destRollup configs.ChainName, destChain *r
 		l2BalsBefore[i] = bal
 	}
 
-	// 4. Bridge from each account on L1. Submit in parallel, then retry the
-	//    ones that fail (portal gas metering caps per-block deposits).
-	const maxRetries = 10
-	const retryDelay = 15 * time.Second
-	bridgeTxs := make([]*types.Transaction, numAcc)
-	succeeded := make([]bool, numAcc)
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		var wg sync.WaitGroup
-		for i, ac := range accountsOnL1 {
-			if succeeded[i] {
-				continue
+	// 4. Bridge from each account on L1. See runConcurrentTxRounds for why we
+	//    retry only on on-chain revert (= OP portal's per-L1-block deposit gas
+	//    cap was hit), not on receipt-poll timeouts.
+	const maxRounds = 10
+	bridgeTxs, bridgeErrs := runConcurrentTxRounds(ctx, accountsOnL1,
+		func(_ int, ac *accounts.Account) (*types.Transaction, error) {
+			calldata, err := helpers.PackBridgeETHTo(ComposeL1BridgeABI,
+				ac.GetAddress(), uint32(helpers.L1MinGasLimitETH), []byte{})
+			if err != nil {
+				return nil, err
 			}
-			wg.Add(1)
-			go func(i int, ac *accounts.Account) {
-				defer wg.Done()
-				calldata, err := helpers.PackBridgeETHTo(ComposeL1BridgeABI,
-					ac.GetAddress(), uint32(helpers.L1MinGasLimitETH), []byte{})
-				if err != nil {
-					logger.Error("%s acct %d pack: %v", tag, i, err)
-					return
-				}
-				tx, _, err := helpers.SendL1Tx(ctx, ac, bridgeAddr, l1StressBridgeAmount, helpers.L1BridgeGasLimit, calldata)
-				if err != nil {
-					logger.Debug("%s acct %d attempt %d failed: %v", tag, i, attempt, err)
-					return
-				}
-				bridgeTxs[i] = tx
-				succeeded[i] = true
-			}(i, ac)
-		}
-		wg.Wait()
+			tx, _, err := transactions.CreateTransaction(ctx, transactions.TransactionDetails{
+				To:        bridgeAddr,
+				Value:     l1StressBridgeAmount,
+				Gas:       helpers.L1BridgeGasLimit,
+				GasTipCap: helpers.GasTipCap,
+				GasFeeCap: helpers.GasFeeCap,
+				Data:      calldata,
+			}, ac)
+			return tx, err
+		}, tag, maxRounds)
 
-		successCount := 0
-		for _, s := range succeeded {
-			if s {
-				successCount++
-			}
+	confirmed := countNonNilTx(bridgeTxs)
+	for i, err := range bridgeErrs {
+		if bridgeTxs[i] != nil {
+			continue
 		}
-		logger.Info("%s attempt %d: %d/%d succeeded", tag, attempt, successCount, numAcc)
-		if successCount == numAcc {
-			break
-		}
-		if attempt < maxRetries {
-			time.Sleep(retryDelay)
-		}
+		assert.NoErrorf(t, err, "account %d (%s) bridge: %v",
+			i, accountsOnL1[i].GetAddress().Hex(), err)
 	}
-	for i, s := range succeeded {
-		require.Truef(t, s, "account %d (%s) failed all bridge retries",
-			i, accountsOnL1[i].GetAddress().Hex())
-	}
+	require.Equalf(t, numAcc, confirmed,
+		"only %d/%d bridges confirmed after %d rounds", confirmed, numAcc, maxRounds+1)
 
 	// 5. Poll L2 — each account's balance should increase by exactly l1StressBridgeAmount.
 	for i, ac := range accountsOnL2 {

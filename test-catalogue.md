@@ -46,31 +46,20 @@ make test-<network> TEST_FILE=<file> [SOURCE=a|b|l1] [DEST=a|b|l1] [AMOUNT=<eth-
 
 ## L2 → L1 (withdrawal)
 
+> Files in this section are **two-phase** (Withdraw on L2 → Finalize/Replay on
+> L1 after the dispute window). The `full-test-*` suite runs the Withdraw
+> phase *before* the stress group and the Finalize/Replay phase *after* it,
+> so the dispute game gets the stress run's wall-clock time to mature in
+> between. Same split applies to the SA and Replay sections further down.
+
 16. **Withdraw ETH from a rollup back to L1 (two-phase: withdraw + prove/finalize after the dispute window).** — `l2_to_l1_eth_test.go` (per rollup)
 17. **Round-trip an ERC-20 L1 → L2 → L1 with full proof + finalize (two-phase).** — `l2_to_l1_token_test.go` (per rollup)
 
-## Original local-testnet suite (sidecar atomic semantics)
-
-18. **Mint MockL2ERC20 on both rollups as a single atomic XT.** — `bridge_test.go`
-19. **Bridge MockL2ERC20 tokens between rollups via the sidecar (A↔B).** — `bridge_test.go`
-20. **Pair a valid bridge send on A with a failing self-transfer on B and check the sidecar aborts both.** — `bridge_test.go`
-21. **Pair a valid bridge send on A with an under-gassed receive on B and check the sidecar aborts both.** — `bridge_test.go`
-22. **Pair a self-transfer on A with a receiveTokens-without-send on B and check the sidecar aborts both.** — `bridge_test.go`
-23. **Pair a valid self-transfer on A with an overdraft on B and verify atomic abort leaves both balances unchanged.** — `uncorrelated_tx_test.go`
-
-## Stress (local-testnet)
-
-24. **Send many bridge XTs back-to-back from the same account.** — `stress_test.go`
-25. **Spawn many fresh accounts and have each one bridge once.** — `stress_test.go`
-26. **Spawn several accounts and have each one bridge multiple times.** — `stress_test.go`
-27. **Bridge back and forth between A ↔ B in alternating XTs.** — `stress_test.go`
-28. **Interleave bridge XTs with normal self-transfers from the same account.** — `stress_test.go`
-
 ## XT mailbox / nonce edge cases (local-testnet)
 
-29. **Race two XTs that share a mailbox slot.** — `xt_nonce_race_test.go`
-30. **Submit two XTs that putInbox the same nonce.** — `xt_put_inbox_nonce_test.go`
-31. **Drift the XT state between rollups and check the sidecar detects it.** — `xt_state_drift_test.go`
+18. **Race two XTs that share a mailbox slot.** — `xt_nonce_race_test.go`
+19. **Submit two XTs that putInbox the same nonce.** — `xt_put_inbox_nonce_test.go`
+20. **Drift the XT state between rollups and check the sidecar detects it.** — `xt_state_drift_test.go`
 
 ---
 
@@ -90,8 +79,8 @@ SA only ever executes on L2 (where the Kernel + multichain validator are
 deployed). The L1 prove + finalize step is plain EOA-driven against the portal,
 so no L1 AA infrastructure is required.
 
-32. **Withdraw ETH from a rollup back to L1 using a smart account (two-phase: SA-driven L2 burn + EOA-driven L1 prove/finalize).** — `l2_to_l1_sa_eth_test.go` (per rollup)
-33. **Round-trip an ERC-20 L1 → L2 → L1 where the L2 burn is done by a smart account (two-phase).** — `l2_to_l1_sa_token_test.go` (per rollup)
+21. **Withdraw ETH from a rollup back to L1 using a smart account (two-phase: SA-driven L2 burn + EOA-driven L1 prove/finalize).** — `l2_to_l1_sa_eth_test.go` (per rollup)
+22. **Round-trip an ERC-20 L1 → L2 → L1 where the L2 burn is done by a smart account (two-phase).** — `l2_to_l1_sa_token_test.go` (per rollup)
 
 ## Same-L2 CET → core redemption
 
@@ -101,7 +90,7 @@ both CETs in-test (a minimal `IComposableERC20`-compatible contract from
 `internal/helpers/test_cet_deploy.go`) and authorizes the production bridge on
 each; the redeem path itself is fully production-bridge.
 
-34. **Redeem a wrapped CET back into its core CET on the same rollup.** — `l2_redeem_wrapped_cet_test.go` (per rollup)
+23. **Redeem a wrapped CET back into its core CET on the same rollup.** — `l2_redeem_wrapped_cet_test.go` (per rollup)
 
 ## Replay attacks / idempotency
 
@@ -110,6 +99,6 @@ without breaking the original successful one. Each test runs a real
 production-bridge flow once, then re-submits the same operation under fresh
 nonces and decodes the on-chain revert selector.
 
-35. **Submit the same XT (same sessionId) twice — second attempt must be aborted by the sidecar AND eth_call on `receiveETH` must revert with the mailbox's `MessageAlreadyConsumed()` selector. Asserts source + dest ETH balances are unchanged across the aborted XT.** — `xt_replay_test.go` (A↔B)
-36. **L2→L1 withdrawal: prove twice (re-prove tolerated as revert or no-op, but first proof must stand) then finalize twice. Re-finalize must revert with `OptimismPortal_AlreadyFinalized` and `finalizedWithdrawals[hash]` must remain true. Two-phase (withdraw + replay).** — `l2_to_l1_replay_test.go` (per rollup).
+24. **Submit the same XT (same sessionId) twice — second attempt must be aborted by the sidecar AND eth_call on `receiveETH` must revert with the mailbox's `MessageAlreadyConsumed()` selector. Asserts source + dest ETH balances are unchanged across the aborted XT.** — `replay_attack_test.go` (A↔B)
+25. **L2→L1 withdrawal: prove twice (re-prove tolerated as revert or no-op, but first proof must stand) then finalize twice. Re-finalize must revert with `OptimismPortal_AlreadyFinalized` and `finalizedWithdrawals[hash]` must remain true. Two-phase (withdraw + replay).** — `l2_to_l1_replay_test.go` (per rollup).
     > ⚠️ **Stage gate:** Phase 2 can't run on sepolia-stage today — the DGF has `gameCount=0` (no dispute games to prove against) and `proofMaturityDelaySeconds=604800` (7 days). Run Phase 1, wait ≥ 7 days on a network that publishes games, then run Phase 2. Same gate as `TestL2ToL1_ETH_Finalize_*`.

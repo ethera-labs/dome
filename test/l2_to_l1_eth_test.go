@@ -264,10 +264,12 @@ func proveL2ToL1Withdrawal(
 		return fmt.Errorf("portal.respectedGameType: %w", err)
 	}
 
-	// We don't have the DisputeGame ABI globally — the only methods we call are
-	// rootClaim()/extraData(), so we use the loaded DisputeGameABI from setup.
+	// Use the package-level minimal DGF/Game ABI so this works on every env,
+	// including those whose config doesn't ship a `dispute-game-factory`
+	// entry (sepolia-stage, sepolia-prod) or ships the wrong ABI under that
+	// key (hoodi). See internal/helpers/dispute_game_abi.go.
 	gameIndex, coveredBlock, err := helpers.FindCoveringDisputeGame(tcontext, TestL1.RPCURL(),
-		dgfAddr, DisputeGameABI, DisputeGameABI, // factory ABI used for gameAtIndex/gameCount; here we reuse the same loaded ABI
+		dgfAddr, helpers.MinimalDisputeGameABI, helpers.MinimalDisputeGameABI,
 		gameType, state.L2Block, 30*time.Second, helpers.DefaultPollAttempts*6,
 	)
 	if err != nil {

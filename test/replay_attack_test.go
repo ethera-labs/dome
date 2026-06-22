@@ -42,19 +42,29 @@ import (
 
 var xtReplayAmount = big.NewInt(5_000_000_000_000_000) // 0.005 ETH
 
+// replayTestRPCSkipReason: the central invariance this test asserts —
+// committed=false plus zero side-effects across XT_2 — is the sidecar's
+// atomic-abort contract. RPC-mode sequencers don't expose a "committed/aborted"
+// decision, and there's no guarantee both legs are dropped together when the
+// destination would revert. The contract-level layer (mailbox's
+// MessageAlreadyConsumed) is already exercised by the eth_call simulation that
+// every receiveETH call goes through, so skipping on RPC mode doesn't lose
+// coverage of the actual replay-protection contract.
+const replayTestRPCSkipReason = "replay-attack test asserts the sidecar's atomic-abort guarantee; RPC mode provides no equivalent — destination-side MessageAlreadyConsumed revert is exercised by the standard L2↔L2 tests"
+
 func TestXTReplay_ETH_AtoB(t *testing.T) {
-	helpers.ApplyDirectionFilter(t, "a", "b")
-	if TestXTMode == configs.XTSubmissionRPC {
-		RequireTSRuntime(t)
+	if TestXTMode != configs.XTSubmissionSidecar {
+		t.Skip(replayTestRPCSkipReason)
 	}
+	helpers.ApplyDirectionFilter(t, "a", "b")
 	runXTReplayETH(t, TestAccountA, TestRollupA, TestAccountB, TestRollupB)
 }
 
 func TestXTReplay_ETH_BtoA(t *testing.T) {
-	helpers.ApplyDirectionFilter(t, "b", "a")
-	if TestXTMode == configs.XTSubmissionRPC {
-		RequireTSRuntime(t)
+	if TestXTMode != configs.XTSubmissionSidecar {
+		t.Skip(replayTestRPCSkipReason)
 	}
+	helpers.ApplyDirectionFilter(t, "b", "a")
 	runXTReplayETH(t, TestAccountB, TestRollupB, TestAccountA, TestRollupA)
 }
 
